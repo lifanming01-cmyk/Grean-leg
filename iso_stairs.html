@@ -3,859 +3,1245 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>绿色小人·不可能的阶梯</title>
+<title>不可能的阶梯 v8</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
-body{background:#1a1a2e;display:flex;justify-content:center;align-items:center;height:100vh;height:100dvh;overflow:hidden;font-family:'Arial',sans-serif}
+body{background:#0a0618;display:flex;justify-content:center;align-items:center;height:100vh;height:100dvh;overflow:hidden;font-family:'Arial',sans-serif}
 canvas{display:block;touch-action:none}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <script>
-const C=document.getElementById('c'),X=C.getContext('2d');
-const GW=420,GH=760;
-let sc=1;
-function resize(){
-  const r1=innerWidth/innerHeight,r2=GW/GH;
-  sc=r1<r2?innerWidth/GW:innerHeight/GH;
-  C.width=GW*sc;C.height=GH*sc;
-  X.setTransform(sc,0,0,sc,0,0);
+/* ================================================================
+   不可能的阶梯 v8
+   在 v7 连续地图 + 分叉选择 的基础上加入三大新机制:
+   ① 视野受限 & 线索推理 — 分支只看前2格, 后面被迷雾遮盖
+   ② 钥匙 & 宝箱 — 跨回合长线资源规划
+   ③ 路径规划交互 — 玩家依次点击地块画出路线, 确认后角色逐步行走
+   ================================================================ */
+
+var C = document.getElementById('c');
+var X = C.getContext('2d');
+var GW = 420, GH = 780, sc = 1;
+
+function resize() {
+  var r = window.innerWidth / window.innerHeight, g = GW / GH;
+  sc = r < g ? window.innerWidth / GW : window.innerHeight / GH;
+  C.width = GW * sc; C.height = GH * sc;
+  X.setTransform(sc, 0, 0, sc, 0, 0);
 }
-resize();addEventListener('resize',resize);
+resize();
+window.addEventListener('resize', resize);
 
-// ===== 等轴测投影 =====
-const T=48;
-function iso(gx,gy,gz){
-  const px=(gx-gy)*T*0.866;
-  const py=(gx+gy)*T*0.5 - gz*T*0.75;
-  return {x:GW/2+px, y:GH*0.72+py};
+// ====== 等轴投影 ======
+var T = 30;
+function iso(gx, gy, gz) {
+  return {
+    x: GW / 2 + (gx - gy) * T,
+    y: GH * 0.45 + (gx + gy) * T * 0.5 - gz * T * 0.7
+  };
 }
 
-// ===== 状态 =====
-const ST={MENU:0,PLAY:1,OVER:2};
-let state=ST.MENU,score=0,best=+localStorage.getItem('isoBest2')||0;
-let pressed=false,gt=0,camOff={x:0,y:0},camTgt={x:0,y:0};
-let shakeT=0,particles=[],floats=[];
+// ====== 游戏状态 ======
+var ST = {
+  MENU: 0,    // 主菜单
+  WALK: 1,    // 角色自动沿主路行走（到分叉点前）
+  PLAN: 2,    // 【新】路径规划阶段 — 玩家在分支上依次点选地块画路线
+  CONFIRM: 3, // 【新】路线已画好, 等玩家点"出发"确认
+  EXEC: 4,    // 【新】角色沿玩家规划的路线逐步行走
+  RESULT: 5,  // 结果展示
+  OVER: 6     // 游戏结束
+};
+var state = ST.MENU;
+var score = 0;
+var best = 0; try { best = parseInt(localStorage.getItem('isoV8') || '0'); } catch(e) {}
+var lives = 3;
+var combo = 0;
+var comboT = 0;
+var step = 0;
+var gt = 0;
+var shakeT = 0;
 
-// ===== 平台 =====
-let plats=[];
-let cur=0; // 当前平台
+// ====== 【机制②】钥匙 & 宝箱 — 跨回合长线资源 ======
+var keys = 0;          // 玩家持有的金钥匙数量
+var chestsOpened = 0;  // 已开启宝箱数（纯统计）
+
+// 相机
+var camX = 0, camY = 0, camTX = 0, camTY = 0;
 
 // 角色
-const P={
-  rx:0,ry:0,rz:0,
-  moving:false,legA:0,bodyB:0,
-  blink:0,blinkT:0,facing:1,
-  hurt:false,hurtT:0,invT:0,
-  combo:0,comboT:0,
-  falling:false,fallV:0
+var P = { gx: 0, gy: 0, gz: 0, facing: 1, bounce: 0 };
+var walkQueue = [];  // 角色自动行走队列（主路段）
+var walkSpeed = 0.07;
+var walkT = 0;
+var walkFrom = null;
+
+// 【机制③】路径规划 — 玩家画的路线
+var plannedPath = [];     // 玩家已选的地块序列 [{gx,gy,gz,tileRef}, ...]
+var execQueue = [];       // 确认后的执行队列
+var execT = 0;
+var execFrom = null;
+var execSpeed = 0.08;
+
+// 结果
+var resultT = 0;
+var resultTxt = '';
+var resultCol = '';
+
+// ====== 地图数据 ======
+var tiles = [];       // 所有地图方块
+var mainPath = [];    // 当前主路段
+var branches = [];    // 当前分叉选项
+var branchStart = null;
+
+// ====== 【机制①】视野受限 — 每个 tile 有 visible 属性 ======
+// tile.foggy = true 表示被迷雾覆盖（只看到灰色轮廓）
+// 分支的前 visibleRange 格可见, 后面 foggy
+
+var visibleRange = 2; // 分支中前2格可见
+
+// ====== 物品系统 ======
+var ITEMS = {
+  tree:     { emoji: '🌲', hint: 'good' },
+  flower:   { emoji: '🌸', hint: 'good' },
+  bush:     { emoji: '🍀', hint: 'good' },
+  star:     { emoji: '⭐', hint: 'good' },
+  gem:      { emoji: '💎', hint: 'good' },
+  flag:     { emoji: '🚩', hint: 'good' },
+  fountain: { emoji: '⛲', hint: 'good' },
+  skull:    { emoji: '💀', hint: 'bad' },
+  spike:    { emoji: '⚡', hint: 'bad' },
+  fire:     { emoji: '🔥', hint: 'bad' },
+  bat:      { emoji: '🦇', hint: 'bad' },
+  web:      { emoji: '🕸️', hint: 'bad' },
+  bone:     { emoji: '🦴', hint: 'bad' },
+  crack:    { emoji: '⚠️', hint: 'bad' },
+  mushroom: { emoji: '🍄', hint: 'neutral' },
+  crystal:  { emoji: '🔮', hint: 'neutral' },
+  rune:     { emoji: '🗿', hint: 'neutral' },
+  // 【机制②】新增钥匙和宝箱
+  key:      { emoji: '🔑', hint: 'key' },
+  chest:    { emoji: '📦', hint: 'chest' }
 };
 
-// ===== 核心修复：保证路径 100% 可达 =====
-function genPlats(){
-  plats=[];
-  // 起始大平台
-  plats.push({gx:0,gy:0,gz:0,w:2,d:2,type:'start',alive:true,
-    crumT:0,fOff:0,visited:true,star:false,starGot:false,
-    obs:null,obsAct:true,opacity:1,idx:0});
+var GOOD_ITEMS = ['tree','flower','bush','star','gem','flag','fountain'];
+var BAD_ITEMS = ['skull','spike','fire','bat','web','bone','crack'];
+var NEUTRAL_ITEMS = ['mushroom','crystal','rune'];
 
-  let cx=0,cy=0,cz=0;
+// 颜色主题
+var THEME_SAFE =   [{ color:'#3a8a5c', topColor:'#4ca870' },{ color:'#3a7a8a', topColor:'#4c98a8' },{ color:'#5a7a3a', topColor:'#72984c' }];
+var THEME_DANGER = [{ color:'#8a3a3a', topColor:'#a84c4c' },{ color:'#6a2a5a', topColor:'#883a72' },{ color:'#7a4a2a', topColor:'#985c3a' }];
+var THEME_NEUTRAL =[{ color:'#5a5a6a', topColor:'#727282' }];
+var THEME_FOG =     { color:'#3a3a4a', topColor:'#4a4a5a' }; // 迷雾格子的颜色
+var THEME_KEY =     { color:'#8a7a20', topColor:'#a89830' }; // 钥匙路径
+var THEME_CHEST =   { color:'#2a6a8a', topColor:'#3a82a8' }; // 宝箱路径
 
-  for(let i=1;i<300;i++){
-    const diff=Math.min(i/60,1);
-    
-    // 方向：只向右(+x)或向前(+y)走，保证路径单向可达
-    // 偶尔上下台阶
-    let dx,dy,dz=0;
-    
-    // 交替方向，形成Z字形好看的路径
-    const pattern = Math.floor((i-1)/3) % 4; // 每3步换方向
-    if(pattern === 0 || pattern === 1){
-      // 向右走
-      dx=1; dy=0;
-    } else {
-      // 向前走
-      dx=0; dy=1;
-    }
-
-    // 加入一些变化（但保证间距=1，一定能到达）
-    if(i > 10 && Math.random()<0.2*diff){
-      // 对角一步
-      dx=1;dy=1;
-    }
-
-    // 高度变化 - 上下台阶
-    if(Math.random()<0.3){
-      dz = Math.random()<0.65 ? 1 : -1;
-      if(cz+dz < -3) dz=1;
-      if(cz+dz > 15) dz=-1;
-    }
-
-    cx+=dx; cy+=dy; cz+=dz;
-
-    // 平台尺寸
-    let w=1,d=1;
-    let type='normal';
-    let star = Math.random()<0.15;
-    let obs = null;
-
-    // 特殊平台
-    if(i>6){
-      const r=Math.random();
-      if(r<0.06*diff){
-        type='crumble'; // 碎裂
-      } else if(r<0.12*diff){
-        type='float'; // 漂浮
-      } else if(r<0.18*diff && i>15){
-        type='illusion'; // 视错觉
-        w=2;d=1;
-      } else if(r<0.24*diff && i>20){
-        type='fold'; // 空间折叠
-        w=2;d=2;
-        // 折叠跳远 - 下一个平台会离得远但也一定可达
-      } else if(r<0.28*diff && i>25){
-        type='penrose'; // 彭罗斯
-      }
-      
-      // 有时加宽
-      if(type==='normal' && Math.random()<0.15) { w=2; }
-      if(type==='normal' && Math.random()<0.12) { d=2; }
-    }
-
-    // 障碍物（不在特殊平台上）
-    if(i>8 && type==='normal' && Math.random()<0.1*diff){
-      obs = Math.random()<0.5?'spike':'block';
-    }
-
-    plats.push({
-      gx:cx,gy:cy,gz:cz,w,d,type,alive:true,
-      crumT:0, fOff:Math.random()*Math.PI*2,
-      visited:false, star, starGot:false,
-      obs, obsAct:true, opacity:1, idx:i
-    });
-  }
+// 星空
+var stars = [];
+for (var i = 0; i < 70; i++) {
+  stars.push({ x: Math.random() * GW, y: Math.random() * GH * 0.7, s: Math.random() * 1.5 + 0.3, sp: Math.random() * 0.008 + 0.003 });
 }
 
-// ===== 主题 =====
-const THEMES=[
-  {top:'#f0e6d3',left:'#c8b498',right:'#b09878',accent:'#e8967a',sky1:'#2c1e3a',sky2:'#1a1230'},
-  {top:'#d5e8d4',left:'#94b892',right:'#78a076',accent:'#6b9e6b',sky1:'#1a2e1a',sky2:'#0e1e0e'},
-  {top:'#dae2f8',left:'#9aaac8',right:'#7e90b0',accent:'#6c7eb7',sky1:'#1a1e3a',sky2:'#0e1228'},
-  {top:'#f0d0d8',left:'#c89098',right:'#b07880',accent:'#b06070',sky1:'#2e1a22',sky2:'#1e0e16'},
-  {top:'#e0d8f0',left:'#a898c8',right:'#9080b0',accent:'#8b6aae',sky1:'#201a30',sky2:'#140e22'},
-];
-function getTheme(idx){ return THEMES[Math.floor(idx/20)%THEMES.length]; }
+// 粒子
+var particles = [];
+var floats = [];
 
-// ===== 绘制等轴方块 =====
-function drawCube(cx,cy,w,d,h,tc,lc,rc,alpha){
-  const a=0.866, b=0.5;
-  const hw=w*T*a, hd=d*T*a;
-  const sw=w*T*b, sd=d*T*b;
-  const rise=h*T*0.75;
+// ====== 工具 ======
+function randPick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function shuffle(arr) {
+  for (var i = arr.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+  }
+  return arr;
+}
 
-  X.save();
-  if(alpha!==undefined) X.globalAlpha=alpha;
+// ====== 地图生成 ======
+
+function findTile(gx, gy, gz) {
+  for (var i = 0; i < tiles.length; i++) {
+    if (tiles[i].gx === gx && tiles[i].gy === gy && tiles[i].gz === gz) return tiles[i];
+  }
+  return null;
+}
+
+function addTile(gx, gy, gz, theme, foggy) {
+  var exist = findTile(gx, gy, gz);
+  if (exist) return exist;
+  var t = {
+    gx: gx, gy: gy, gz: gz,
+    color: theme.color, topColor: theme.topColor,
+    // 保存原始颜色, 迷雾揭开后恢复
+    realColor: theme.color, realTopColor: theme.topColor,
+    items: [],
+    foggy: !!foggy,       // 【机制①】是否被迷雾遮盖
+    revealed: false,      // 角色走过后揭开
+    branchIdx: -1,        // 属于哪个分支(-1=主路)
+    pathOrder: 0          // 在分支中的顺序(用于判断是否在可见范围内)
+  };
+  // 如果 foggy, 覆盖显示颜色为迷雾色
+  if (t.foggy) {
+    t.color = THEME_FOG.color;
+    t.topColor = THEME_FOG.topColor;
+  }
+  tiles.push(t);
+  return t;
+}
+
+function addItemToTile(tile, itemKey) {
+  tile.items.push({ key: itemKey, emoji: ITEMS[itemKey].emoji, hint: ITEMS[itemKey].hint });
+}
+
+// 生成主路径(分叉点之间的安全直路)
+function generateMainPath(sx, sy, sz, length) {
+  var path = [];
+  var gx = sx, gy = sy, gz = sz;
+  var theme = randPick(THEME_SAFE);
+  for (var i = 0; i < length; i++) {
+    path.push({ gx: gx, gy: gy, gz: gz });
+    var tile = addTile(gx, gy, gz, theme, false);
+    tile.branchIdx = -1;
+    // 主路上偶尔放小装饰
+    if (i > 0 && Math.random() < 0.2) addItemToTile(tile, randPick(['tree','flower','bush']));
+    // 随机方向, 总体上升
+    var d = Math.random();
+    if (d < 0.4) { gx++; gz++; }
+    else if (d < 0.8) { gy++; gz++; }
+    else { gx++; gy++; gz += 2; }
+  }
+  return path;
+}
+
+/*
+ * 【核心】生成分支路径
+ * 参数 type: 'safe'|'star'|'gold'|'crack'|'spike'|'void'|'key'|'chest'
+ * 参数 direction: 'left'|'center'|'right'
+ *
+ * 【机制①】前 visibleRange 格正常显示, 后面的格子 foggy=true
+ * 【机制②】type='key' 在末端放钥匙; type='chest' 在末端放宝箱
+ */
+function generateBranch(sx, sy, sz, type, direction, brIdx) {
+  var path = [];
+  var gx = sx, gy = sy, gz = sz;
+  var length = 4 + Math.floor(Math.random() * 3); // 4-6格
+
+  var isSafe = (type === 'safe' || type === 'star' || type === 'gold' || type === 'chest');
+  var isKey = (type === 'key');
+  var themePool;
+  if (isKey) themePool = [THEME_KEY];
+  else if (type === 'chest') themePool = [THEME_CHEST];
+  else themePool = isSafe ? THEME_SAFE : THEME_DANGER;
+  var theme = randPick(themePool);
+
+  for (var i = 0; i < length; i++) {
+    // 方向偏移
+    if (direction === 'left') { gx++; gz++; if (i % 2 === 0) gy--; }
+    else if (direction === 'right') { gy++; gz++; if (i % 2 === 0) gx--; }
+    else { if (i % 2 === 0) { gx++; gz++; } else { gy++; gz++; } }
+
+    // 【机制①】前 visibleRange 格可见, 后面迷雾
+    var isFoggy = (i >= visibleRange);
+
+    path.push({ gx: gx, gy: gy, gz: gz });
+    var tile = addTile(gx, gy, gz, theme, isFoggy);
+    tile.branchIdx = brIdx;
+    tile.pathOrder = i;
+
+    // 在可见格上放线索物品
+    if (i < visibleRange && Math.random() < 0.6) {
+      var itemPool;
+      if (isKey) {
+        // 钥匙路径: 前面放一些危险暗示, 暗示这条路有风险但也有宝
+        itemPool = Math.random() < 0.5 ? BAD_ITEMS : NEUTRAL_ITEMS;
+      } else if (type === 'chest') {
+        itemPool = GOOD_ITEMS;
+      } else if (isSafe) {
+        itemPool = Math.random() < 0.7 ? GOOD_ITEMS : NEUTRAL_ITEMS;
+      } else {
+        itemPool = Math.random() < 0.65 ? BAD_ITEMS : NEUTRAL_ITEMS;
+      }
+      addItemToTile(tile, randPick(itemPool));
+    }
+
+    // 在迷雾格上也放物品(但玩家看不到, 走到才揭开)
+    if (i >= visibleRange && Math.random() < 0.5) {
+      if (isKey && i < length - 1) {
+        // 钥匙路径中间: 混合危险和奖励
+        addItemToTile(tile, Math.random() < 0.5 ? randPick(BAD_ITEMS) : randPick(GOOD_ITEMS));
+      } else if (isSafe) {
+        addItemToTile(tile, randPick(GOOD_ITEMS));
+      } else {
+        addItemToTile(tile, randPick(BAD_ITEMS));
+      }
+    }
+  }
+
+  // 末端放特殊物品
+  var lastPt = path[path.length - 1];
+  var lastTile = findTile(lastPt.gx, lastPt.gy, lastPt.gz);
+  if (lastTile) {
+    if (type === 'key') {
+      addItemToTile(lastTile, 'key');   // 【机制②】钥匙
+    } else if (type === 'chest') {
+      addItemToTile(lastTile, 'chest'); // 【机制②】宝箱
+    } else if (type === 'gold') {
+      addItemToTile(lastTile, 'gem');
+    } else if (type === 'star') {
+      addItemToTile(lastTile, 'star');
+    } else if (!isSafe) {
+      addItemToTile(lastTile, 'skull');
+    }
+  }
+
+  // 分支信息
+  var reward = 0, label = '';
+  switch(type) {
+    case 'safe':  reward = 3;  label = '🌿 安全'; break;
+    case 'star':  reward = 10; label = '⭐ 星星'; break;
+    case 'gold':  reward = 25; label = '💎 宝石'; break;
+    case 'crack': reward = -1; label = '💀 碎裂'; break;
+    case 'spike': reward = -2; label = '⚡ 陷阱'; break;
+    case 'void':  reward = -3; label = '🕳️ 深渊'; break;
+    case 'key':   reward = -1; label = '🔑 钥匙'; break; // 拿钥匙有代价(扣血)
+    case 'chest': reward = 0;  label = '📦 宝箱'; break;  // 宝箱本身不给分, 用钥匙开才给
+  }
+
+  return { path: path, type: type, reward: reward, label: label, direction: direction, brIdx: brIdx };
+}
+
+// 生成分叉点
+function generateFork(sx, sy, sz) {
+  var diff = Math.min(step / 10, 1);
+  var numBr = Math.random() < 0.35 + diff * 0.15 ? 3 : 2;
+  var dirs = numBr === 2 ? ['left','right'] : ['left','center','right'];
+
+  var goodTypes = ['safe','star','gold'];
+  var badTypes = ['crack','spike','void'];
+
+  var types = [];
+  // 至少一个好
+  types.push(randPick(goodTypes));
+  for (var i = 1; i < numBr; i++) {
+    if (Math.random() < 0.25 + diff * 0.4) types.push(randPick(badTypes));
+    else types.push(randPick(goodTypes));
+  }
+
+  // 【机制②】每隔几步, 有几率出现钥匙路径或宝箱路径
+  if (step > 1 && Math.random() < 0.35) {
+    // 替换其中一个分支为钥匙或宝箱
+    var replaceIdx = Math.floor(Math.random() * types.length);
+    if (keys === 0 || Math.random() < 0.5) {
+      types[replaceIdx] = 'key'; // 生成钥匙路径
+    } else {
+      types[replaceIdx] = 'chest'; // 有钥匙时更可能出宝箱
+    }
+  }
+
+  shuffle(types);
+
+  branches = [];
+  for (var i = 0; i < numBr; i++) {
+    branches.push(generateBranch(sx, sy, sz, types[i], dirs[i], i));
+  }
+  branchStart = { gx: sx, gy: sy, gz: sz };
+}
+
+// ====== 关卡构建 ======
+function buildLevel() {
+  tiles = []; mainPath = []; branches = [];
+  particles = []; floats = []; plannedPath = [];
+  keys = 0; chestsOpened = 0;
+
+  // 起点平台
+  var st = THEME_SAFE[0];
+  for (var dx = -1; dx <= 1; dx++)
+    for (var dy = -1; dy <= 1; dy++)
+      addTile(dx, dy, 0, st, false);
+
+  // 第一段主路
+  mainPath = generateMainPath(0, 0, 0, 5 + Math.floor(Math.random() * 3));
+
+  // 末端分叉
+  var last = mainPath[mainPath.length - 1];
+  generateFork(last.gx, last.gy, last.gz);
+}
+
+function startGame() {
+  state = ST.WALK;
+  score = 0; lives = 3; combo = 0; comboT = 0; step = 0;
+  keys = 0; chestsOpened = 0;
+  P.gx = 0; P.gy = 0; P.gz = 0; P.facing = 1;
+  plannedPath = [];
+
+  buildLevel();
+
+  // 让角色走到第一个分叉点
+  walkQueue = [];
+  for (var i = 1; i < mainPath.length; i++) walkQueue.push(mainPath[i]);
+  walkT = 0;
+  walkFrom = { gx: P.gx, gy: P.gy, gz: P.gz };
+}
+
+// ====== 绘制 ======
+
+function drawTile(gx, gy, gz, color, topColor, ox, oy, scale) {
+  var p = iso(gx, gy, gz);
+  var sx = p.x - ox, sy = p.y - oy;
+  var s = scale || 1;
+  var hw = T * s, hh = T * 0.5 * s;
+  var depth = T * 0.45 * s;
 
   // 顶面
+  X.fillStyle = topColor;
   X.beginPath();
-  X.moveTo(cx, cy);
-  X.lineTo(cx+hw, cy+sw);
-  X.lineTo(cx+hw-hd, cy+sw+sd);
-  X.lineTo(cx-hd, cy+sd);
-  X.closePath();
-  X.fillStyle=tc; X.fill();
-  X.strokeStyle='rgba(0,0,0,0.1)';X.lineWidth=0.8;X.stroke();
+  X.moveTo(sx, sy - hh); X.lineTo(sx + hw, sy);
+  X.lineTo(sx, sy + hh); X.lineTo(sx - hw, sy);
+  X.closePath(); X.fill();
 
   // 左面
+  X.fillStyle = color;
   X.beginPath();
-  X.moveTo(cx-hd, cy+sd);
-  X.lineTo(cx+hw-hd, cy+sw+sd);
-  X.lineTo(cx+hw-hd, cy+sw+sd+rise);
-  X.lineTo(cx-hd, cy+sd+rise);
-  X.closePath();
-  X.fillStyle=lc; X.fill();
-  X.strokeStyle='rgba(0,0,0,0.08)';X.stroke();
+  X.moveTo(sx - hw, sy); X.lineTo(sx, sy + hh);
+  X.lineTo(sx, sy + hh + depth); X.lineTo(sx - hw, sy + depth);
+  X.closePath(); X.fill();
 
   // 右面
+  var rv = parseInt(color.slice(1,3),16), gv = parseInt(color.slice(3,5),16), bv = parseInt(color.slice(5,7),16);
+  X.fillStyle = 'rgb('+Math.floor(rv*0.65)+','+Math.floor(gv*0.65)+','+Math.floor(bv*0.65)+')';
   X.beginPath();
-  X.moveTo(cx+hw, cy+sw);
-  X.lineTo(cx+hw-hd, cy+sw+sd);
-  X.lineTo(cx+hw-hd, cy+sw+sd+rise);
-  X.lineTo(cx+hw, cy+sw+rise);
-  X.closePath();
-  X.fillStyle=rc; X.fill();
-  X.strokeStyle='rgba(0,0,0,0.08)';X.stroke();
+  X.moveTo(sx + hw, sy); X.lineTo(sx, sy + hh);
+  X.lineTo(sx, sy + hh + depth); X.lineTo(sx + hw, sy + depth);
+  X.closePath(); X.fill();
 
+  // 边缘高光
+  X.strokeStyle = 'rgba(255,255,255,0.1)';
+  X.lineWidth = 0.5;
+  X.beginPath();
+  X.moveTo(sx, sy - hh); X.lineTo(sx + hw, sy);
+  X.lineTo(sx, sy + hh); X.lineTo(sx - hw, sy);
+  X.closePath(); X.stroke();
+}
+
+function drawAllTiles(ox, oy) {
+  var sorted = tiles.slice().sort(function(a, b) {
+    return (a.gx + a.gy - a.gz) - (b.gx + b.gy - b.gz);
+  });
+
+  for (var i = 0; i < sorted.length; i++) {
+    var t = sorted[i];
+    drawTile(t.gx, t.gy, t.gz, t.color, t.topColor, ox, oy);
+
+    var p = iso(t.gx, t.gy, t.gz);
+    var sx = p.x - ox, sy = p.y - oy;
+
+    // 【机制①】迷雾效果 — 在foggy格子上画半透明雾气
+    if (t.foggy && !t.revealed) {
+      X.save();
+      X.globalAlpha = 0.55 + Math.sin(gt * 0.03 + t.gx + t.gy) * 0.15;
+      X.fillStyle = '#2a2a3a';
+      X.beginPath();
+      X.moveTo(sx, sy - T * 0.5);
+      X.lineTo(sx + T, sy);
+      X.lineTo(sx, sy + T * 0.5);
+      X.lineTo(sx - T, sy);
+      X.closePath();
+      X.fill();
+      // 雾气问号
+      X.globalAlpha = 0.6;
+      X.fillStyle = '#888';
+      X.font = 'bold 16px Arial';
+      X.textAlign = 'center';
+      X.textBaseline = 'middle';
+      X.fillText('?', sx, sy - 4);
+      X.restore();
+      continue; // foggy格不画物品
+    }
+
+    // 画物品(只在非foggy或已revealed时显示)
+    if (t.items.length > 0 && (!t.foggy || t.revealed)) {
+      for (var j = 0; j < t.items.length; j++) {
+        var bob = Math.sin(gt * 0.05 + t.gx * 2 + t.gy * 3 + j) * 2;
+        X.font = '17px Arial';
+        X.textAlign = 'center'; X.textBaseline = 'middle';
+        X.fillText(t.items[j].emoji, sx + (j - t.items.length/2 + 0.5) * 13, sy - 15 + bob);
+      }
+    }
+  }
+}
+
+// 【机制③】绘制玩家规划的路线
+function drawPlannedPath(ox, oy) {
+  if (plannedPath.length === 0) return;
+
+  X.save();
+  // 画连线
+  X.strokeStyle = 'rgba(100,255,200,0.6)';
+  X.lineWidth = 3;
+  X.setLineDash([6, 3]);
+  X.beginPath();
+  // 起点是角色位置
+  var sp = iso(P.gx, P.gy, P.gz);
+  X.moveTo(sp.x - ox, sp.y - oy - 8);
+  for (var i = 0; i < plannedPath.length; i++) {
+    var pp = iso(plannedPath[i].gx, plannedPath[i].gy, plannedPath[i].gz);
+    X.lineTo(pp.x - ox, pp.y - oy - 8);
+  }
+  X.stroke();
+  X.setLineDash([]);
+
+  // 在每个规划点上画序号圆点
+  for (var i = 0; i < plannedPath.length; i++) {
+    var pp = iso(plannedPath[i].gx, plannedPath[i].gy, plannedPath[i].gz);
+    var px = pp.x - ox, py = pp.y - oy - 8;
+
+    // 圆点
+    X.fillStyle = 'rgba(100,255,200,0.8)';
+    X.beginPath();
+    X.arc(px, py, 10, 0, Math.PI * 2);
+    X.fill();
+
+    // 序号
+    X.fillStyle = '#000';
+    X.font = 'bold 11px Arial';
+    X.textAlign = 'center'; X.textBaseline = 'middle';
+    X.fillText('' + (i + 1), px, py);
+  }
   X.restore();
 }
 
-// ===== 绘制平台 =====
-function drawPlat(p,cx,cy){
-  if(!p.alive) return;
-  let gz=p.gz;
-  if(p.type==='float') gz+=Math.sin(gt*1.5+p.fOff)*0.3;
+// 绘制分支入口标记(只在 PLAN 状态显示)
+function drawBranchMarkers(ox, oy) {
+  if (state !== ST.PLAN && state !== ST.CONFIRM) return;
+  var labels = branches.length === 2 ? ['A','B'] : ['A','B','C'];
 
-  const pos=iso(p.gx,p.gy,gz);
-  const sx=pos.x-cx, sy=pos.y-cy;
-  if(sx<-180||sx>GW+180||sy<-180||sy>GH+180) return;
+  for (var i = 0; i < branches.length; i++) {
+    var br = branches[i];
+    if (br.path.length === 0) continue;
 
-  let alpha=p.opacity;
-  if(p.type==='crumble'&&p.crumT>0){
-    alpha=Math.max(0,1-p.crumT/40);
-    if(p.crumT>40){p.alive=false;return;}
-  }
+    // 在分支第一格上方显示标签
+    var firstPt = br.path[0];
+    var fp = iso(firstPt.gx, firstPt.gy, firstPt.gz);
+    var fx = fp.x - ox, fy = fp.y - oy;
 
-  const t=getTheme(p.idx);
-  let tc=t.top, lc=t.left, rc=t.right;
-
-  // 特殊类型颜色
-  if(p.type==='illusion'){ tc='#dcc8ff';lc='#b090d8';rc='#9878c0'; }
-  else if(p.type==='fold'){ tc='#ffe0b0';lc='#d8a860';rc='#c89040'; }
-  else if(p.type==='penrose'){ tc='#b8e8f0';lc='#80c0c8';rc='#60a0a8'; }
-  else if(p.type==='crumble'){ tc='#ffc8c8';lc='#d89090';rc='#c07878'; }
-
-  // 当前平台亮一点
-  if(p.idx===cur) { tc=lighten(tc,25); }
-  // 下一个平台脉冲
-  if(p.idx===cur+1){
-    const pulse=Math.sin(gt*4)*0.12+0.88;
-    alpha*=pulse;
-    // 额外发光提示
+    // 脉冲光
+    var pulse = 0.7 + Math.sin(gt * 0.08 + i * 2) * 0.3;
     X.save();
-    X.globalAlpha=0.2+Math.sin(gt*4)*0.1;
-    const glow=X.createRadialGradient(sx,sy,5,sx,sy,35);
-    glow.addColorStop(0,'rgba(255,255,200,0.4)');
-    glow.addColorStop(1,'rgba(255,255,200,0)');
-    X.fillStyle=glow;
-    X.beginPath();X.arc(sx,sy,35,0,Math.PI*2);X.fill();
+    X.globalAlpha = 0.2 * pulse;
+    var brType = br.type;
+    var glowCol = (brType === 'key') ? '#ffd700' : (brType === 'chest') ? '#4488ff' : '#44ff88';
+    X.fillStyle = glowCol;
+    X.beginPath();
+    X.arc(fx, fy - 30, 22, 0, Math.PI * 2);
+    X.fill();
     X.restore();
-  }
 
-  const pillar=0.5;
-  drawCube(sx,sy,p.w,p.d,pillar,tc,lc,rc,alpha);
+    // 标签圆
+    X.save();
+    X.fillStyle = 'rgba(0,0,0,0.7)';
+    X.strokeStyle = 'rgba(255,255,255,0.5)';
+    X.lineWidth = 2;
+    X.beginPath();
+    X.arc(fx, fy - 30, 15, 0, Math.PI * 2);
+    X.fill(); X.stroke();
 
-  // 视错觉桥梁
-  if(p.type==='illusion'&&p.idx>0){
-    const prev=plats[p.idx-1];
-    if(prev){
-      const pp=iso(prev.gx,prev.gy,prev.gz);
+    X.fillStyle = '#fff';
+    X.font = 'bold 14px Arial';
+    X.textAlign = 'center'; X.textBaseline = 'middle';
+    X.fillText(labels[i], fx, fy - 30);
+    X.restore();
+
+    // 分支连线(从分叉点到第一格)
+    if (branchStart) {
+      var bsp = iso(branchStart.gx, branchStart.gy, branchStart.gz);
       X.save();
-      X.globalAlpha=0.3+Math.sin(gt*3)*0.15;
-      X.setLineDash([5,5]);
-      X.strokeStyle='#c080ff';X.lineWidth=2.5;
+      X.strokeStyle = 'rgba(255,255,255,0.07)';
+      X.lineWidth = 1;
+      X.setLineDash([3, 4]);
       X.beginPath();
-      X.moveTo(pp.x-cx,pp.y-cy);
-      const mx2=(pp.x-cx+sx)/2, my2=(pp.y-cy+sy)/2-30;
-      X.quadraticCurveTo(mx2,my2,sx,sy);
-      X.stroke();X.setLineDash([]);
-      // 粒子
-      for(let j=0;j<4;j++){
-        const tt=(gt*0.4+j*0.25)%1;
-        const bx2=pp.x-cx+(sx-(pp.x-cx))*tt;
-        const by2=pp.y-cy+(sy-(pp.y-cy))*tt-Math.sin(tt*Math.PI)*30;
-        X.fillStyle=`rgba(200,128,255,${0.5-tt*0.5})`;
-        X.beginPath();X.arc(bx2,by2,2.5,0,Math.PI*2);X.fill();
-      }
-      X.restore();
-    }
-  }
-
-  // 空间折叠传送门
-  if(p.type==='fold'){
-    X.save();
-    X.globalAlpha=0.35+Math.sin(gt*4)*0.15;
-    const gr=X.createRadialGradient(sx,sy-12,3,sx,sy-12,22);
-    gr.addColorStop(0,'#ffd54f');
-    gr.addColorStop(0.6,'#ff8a00');
-    gr.addColorStop(1,'rgba(255,138,0,0)');
-    X.fillStyle=gr;
-    X.beginPath();X.arc(sx,sy-12,22,0,Math.PI*2);X.fill();
-    X.strokeStyle='#ffe082';X.lineWidth=1.5;
-    for(let j=0;j<3;j++){
-      X.beginPath();
-      X.ellipse(sx,sy-12,15+j*5,6+j*2,gt*2+j,0,Math.PI*2);
+      X.moveTo(bsp.x - ox, bsp.y - oy - 8);
+      X.lineTo(fx, fy - 8);
       X.stroke();
-    }
-    X.restore();
-  }
-
-  // 彭罗斯标记
-  if(p.type==='penrose'){
-    X.save();
-    X.globalAlpha=0.35;
-    X.strokeStyle='#4dd0e1';X.lineWidth=2;
-    const sz2=10;
-    X.beginPath();
-    X.moveTo(sx,sy-20-sz2);
-    X.lineTo(sx+sz2,sy-20+sz2*0.6);
-    X.lineTo(sx-sz2,sy-20+sz2*0.6);
-    X.closePath();X.stroke();
-    X.beginPath();
-    X.moveTo(sx,sy-20-sz2*0.35);
-    X.lineTo(sx+sz2*0.45,sy-20+sz2*0.25);
-    X.lineTo(sx-sz2*0.45,sy-20+sz2*0.25);
-    X.closePath();X.stroke();
-    X.restore();
-  }
-
-  // 障碍物
-  if(p.obs&&p.obsAct){
-    const oy=sy-pillar*T*0.75-5;
-    X.save();X.translate(sx,oy);
-    if(p.obs==='spike'){
-      X.save();X.rotate(gt*2);
-      X.beginPath();
-      for(let j=0;j<5;j++){
-        const ang=(j*Math.PI*2)/5-Math.PI/2,iang=ang+Math.PI/5;
-        if(j===0)X.moveTo(Math.cos(ang)*9,Math.sin(ang)*9);
-        else X.lineTo(Math.cos(ang)*9,Math.sin(ang)*9);
-        X.lineTo(Math.cos(iang)*3.5,Math.sin(iang)*3.5);
-      }
-      X.closePath();X.fillStyle='#ef5350';X.fill();
-      X.strokeStyle='#c62828';X.lineWidth=1.5;X.stroke();
-      X.restore();
-    } else {
-      X.save();X.rotate(gt);
-      X.fillStyle='#ff7043';X.fillRect(-7,-7,14,14);
-      X.strokeStyle='#d84315';X.lineWidth=1.5;X.strokeRect(-7,-7,14,14);
-      X.strokeStyle='#fff';X.lineWidth=1.2;
-      X.beginPath();X.moveTo(-3,-3);X.lineTo(3,3);X.moveTo(3,-3);X.lineTo(-3,3);X.stroke();
+      X.setLineDash([]);
       X.restore();
     }
-    X.restore();
-  }
-
-  // 星星
-  if(p.star&&!p.starGot){
-    const bob=Math.sin(gt*3+p.fOff)*3;
-    const oy2=sy-pillar*T*0.75-18+bob;
-    X.save();X.translate(sx,oy2);
-    const gl=X.createRadialGradient(0,0,2,0,0,12);
-    gl.addColorStop(0,'rgba(255,215,0,0.4)');
-    gl.addColorStop(1,'rgba(255,215,0,0)');
-    X.fillStyle=gl;X.beginPath();X.arc(0,0,12,0,Math.PI*2);X.fill();
-    X.beginPath();
-    for(let j=0;j<5;j++){
-      const ang=(j*Math.PI*2)/5-Math.PI/2,iang=ang+Math.PI/5;
-      if(j===0)X.moveTo(Math.cos(ang)*7,Math.sin(ang)*7);
-      else X.lineTo(Math.cos(ang)*7,Math.sin(ang)*7);
-      X.lineTo(Math.cos(iang)*3,Math.sin(iang)*3);
-    }
-    X.closePath();X.fillStyle='#ffd700';X.fill();
-    X.strokeStyle='#ffa000';X.lineWidth=0.8;X.stroke();
-    X.restore();
   }
 }
 
-// ===== 角色 =====
-function drawChar(cx,cy){
-  let gz=P.rz;
-  if(P.falling) gz-=P.fallV*0.05;
-  const pos=iso(P.rx,P.ry,gz);
-  const sx=pos.x-cx, sy=pos.y-cy;
+// 绘制角色
+function drawChar(ox, oy) {
+  var gx = P.gx, gy = P.gy, gz = P.gz;
 
-  X.save();X.translate(sx,sy);
-  if(P.invT>0&&Math.floor(gt*10)%2===0)X.globalAlpha=0.4;
-  if(P.hurt)X.translate(Math.sin(gt*50)*3,0);
+  // 行走插值
+  if (state === ST.WALK && walkFrom && walkQueue.length > 0) {
+    var to = walkQueue[0];
+    gx = walkFrom.gx + (to.gx - walkFrom.gx) * walkT;
+    gy = walkFrom.gy + (to.gy - walkFrom.gy) * walkT;
+    gz = walkFrom.gz + (to.gz - walkFrom.gz) * walkT + Math.sin(walkT * Math.PI) * 0.3;
+  }
 
-  const bounce=P.moving?Math.sin(P.bodyB)*2.5:0;
-  const legSw=P.moving?Math.sin(P.legA)*0.35:0;
+  // 执行路线插值
+  if (state === ST.EXEC && execFrom && execQueue.length > 0) {
+    var to = execQueue[0];
+    gx = execFrom.gx + (to.gx - execFrom.gx) * execT;
+    gy = execFrom.gy + (to.gy - execFrom.gy) * execT;
+    gz = execFrom.gz + (to.gz - execFrom.gz) * execT + Math.sin(execT * Math.PI) * 0.5;
+  }
 
-  // 阴影
-  X.save();X.globalAlpha=0.18;X.fillStyle='#000';
-  X.beginPath();X.ellipse(0,6,12,5,0,0,Math.PI*2);X.fill();X.restore();
+  var p = iso(gx, gy, gz);
+  var sx = p.x - ox, sy = p.y - oy;
+  var bob = Math.sin(P.bounce) * 1.5;
+  var isMoving = (state === ST.WALK || state === ST.EXEC);
 
-  X.translate(0,bounce-22);
+  X.save();
+  X.translate(sx, sy - 18 + bob);
+  var f = P.facing;
 
-  // 头
-  X.beginPath();X.arc(0,-8,9,0,Math.PI*2);
-  X.fillStyle='#2d8f4e';X.fill();X.strokeStyle='#1a5c32';X.lineWidth=1.8;X.stroke();
+  // 影子
+  X.globalAlpha = 0.25;
+  X.fillStyle = '#000';
+  X.beginPath(); X.ellipse(0, 16, 10, 4, 0, 0, Math.PI*2); X.fill();
+  X.globalAlpha = 1;
 
-  // 身体交叉
-  X.beginPath();
-  X.moveTo(-3,1);
-  X.quadraticCurveTo(-12,10,-5,17);
-  X.quadraticCurveTo(2,23,9,30);
-  X.lineTo(11,34);X.lineTo(5,34);
-  X.quadraticCurveTo(0,27,-2,21);
-  X.quadraticCurveTo(-7,27,-11,34);
-  X.lineTo(-13,34);X.lineTo(-7,30);
-  X.quadraticCurveTo(-2,23,3,17);
-  X.quadraticCurveTo(11,10,3,1);
-  X.closePath();
-  X.fillStyle='#2d8f4e';X.fill();X.strokeStyle='#1a5c32';X.lineWidth=1.8;X.stroke();
-
-  // 高光
-  X.beginPath();
-  X.moveTo(-1,3);X.quadraticCurveTo(-7,10,-2,15);
-  X.quadraticCurveTo(0,13,1,10);X.quadraticCurveTo(7,6,1,3);
-  X.closePath();X.fillStyle='rgba(58,181,100,0.35)';X.fill();
-
-  // 白色点
-  X.beginPath();X.ellipse(0,14,2.5,3.5,0,0,Math.PI*2);
-  X.fillStyle='rgba(255,255,255,0.55)';X.fill();
+  // 身体
+  X.fillStyle = '#4ddb6a';
+  X.beginPath(); X.ellipse(-4*f, -2, 8, 11, 0.15*f, 0, Math.PI*2); X.fill();
+  X.beginPath(); X.ellipse(4*f, -2, 8, 11, -0.15*f, 0, Math.PI*2); X.fill();
+  X.fillStyle = '#7aee92';
+  X.beginPath(); X.ellipse(-2*f, -6, 3.5, 5.5, 0.15*f, 0, Math.PI*2); X.fill();
 
   // 眼睛
-  const ey=-12,bs=P.blink>0?Math.max(0.1,1-P.blink):1;
-  X.beginPath();X.arc(-4.5,ey,5.5,0,Math.PI*2);X.arc(4.5,ey,5.5,0,Math.PI*2);
-  X.fillStyle='#1a5c32';X.fill();
-  X.beginPath();X.ellipse(-4.5,ey,4.5,4.5*bs,0,0,Math.PI*2);X.fillStyle='#fff';X.fill();
-  X.beginPath();X.ellipse(4.5,ey,4.5,4.5*bs,0,0,Math.PI*2);X.fillStyle='#fff';X.fill();
-  if(bs>0.3){
-    const po=P.facing*1.2;
-    X.beginPath();X.arc(-4.5+po,ey,2.2,0,Math.PI*2);X.fillStyle='#1a237e';X.fill();
-    X.beginPath();X.arc(4.5+po,ey,2.2,0,Math.PI*2);X.fillStyle='#1a237e';X.fill();
-  }
-  X.beginPath();X.arc(0,-2,3.5,0.1*Math.PI,0.9*Math.PI);
-  X.strokeStyle='#1a5c32';X.lineWidth=1.3;X.stroke();
+  X.fillStyle = '#fff';
+  X.beginPath(); X.arc(-4*f, -7, 5, 0, Math.PI*2); X.fill();
+  X.beginPath(); X.arc(4*f, -7, 5, 0, Math.PI*2); X.fill();
+  X.fillStyle = '#2244cc';
+  X.beginPath(); X.arc(-3*f, -7, 2.8, 0, Math.PI*2); X.fill();
+  X.beginPath(); X.arc(5*f, -7, 2.8, 0, Math.PI*2); X.fill();
+  X.fillStyle = '#fff';
+  X.beginPath(); X.arc(-2*f, -8.5, 1, 0, Math.PI*2); X.fill();
+  X.beginPath(); X.arc(6*f, -8.5, 1, 0, Math.PI*2); X.fill();
 
-  // 鞋
-  for(let s of[-1,1]){
-    X.save();X.translate(s*7,34);X.rotate(s*legSw);
-    X.beginPath();X.ellipse(0,3.5,8,4.5,0,0,Math.PI*2);X.fillStyle='#2c2c2c';X.fill();
-    X.beginPath();X.moveTo(-3.5,1.5);X.quadraticCurveTo(0,4,4.5,0.5);
-    X.strokeStyle='#f5a623';X.lineWidth=1.5;X.stroke();
-    X.restore();
-  }
+  // 鞋子
+  var legA = isMoving ? Math.sin(gt * 0.3) * 3 : 0;
+  X.fillStyle = '#222';
+  X.beginPath(); X.ellipse(-4*f+legA, 13, 4.5, 3, 0, 0, Math.PI*2); X.fill();
+  X.beginPath(); X.ellipse(4*f-legA, 13, 4.5, 3, 0, 0, Math.PI*2); X.fill();
+  X.strokeStyle = '#f0c020'; X.lineWidth = 1;
+  X.beginPath(); X.arc(-4*f+legA, 12, 2.5, 0.5, 2.5); X.stroke();
+  X.beginPath(); X.arc(4*f-legA, 12, 2.5, 0.5, 2.5); X.stroke();
 
   X.restore();
 }
 
-// ===== 路径连线 =====
-function drawConns(cx,cy){
-  X.save();X.globalAlpha=0.12;X.strokeStyle='rgba(255,255,255,0.3)';X.lineWidth=1;
-  X.setLineDash([3,4]);
-  const s=Math.max(0,cur-2),e=Math.min(plats.length-1,cur+12);
-  for(let i=s;i<e;i++){
-    const a=plats[i],b=plats[i+1];
-    if(!a||!b||!a.alive||!b.alive)continue;
-    if(b.type==='illusion'||b.type==='fold')continue;
-    const pa=iso(a.gx,a.gy,a.gz),pb=iso(b.gx,b.gy,b.gz);
-    X.beginPath();X.moveTo(pa.x-cx,pa.y-cy);X.lineTo(pb.x-cx,pb.y-cy);X.stroke();
-  }
-  X.setLineDash([]);X.restore();
-}
-
-// ===== 粒子 =====
-function addP(gx,gy,gz,col,n){
-  for(let i=0;i<n;i++) particles.push({
-    gx,gy,gz,vx:(Math.random()-0.5)*0.12,vy:(Math.random()-0.5)*0.12,vz:Math.random()*0.08+0.02,
-    life:1,decay:0.02+Math.random()*0.02,color:col,size:2+Math.random()*2.5
-  });
-}
-function addFloat(gx,gy,gz,txt,col){
-  floats.push({gx,gy,gz,txt,col,life:1,vz:0.035});
-}
-function updateParts(){
-  for(let i=particles.length-1;i>=0;i--){
-    const p=particles[i];p.gx+=p.vx;p.gy+=p.vy;p.gz+=p.vz;p.vz-=0.0015;
-    p.life-=p.decay;if(p.life<=0)particles.splice(i,1);
-  }
-  for(let i=floats.length-1;i>=0;i--){
-    const f=floats[i];f.gz+=f.vz;f.life-=0.016;if(f.life<=0)floats.splice(i,1);
-  }
-}
-function drawParts(cx,cy){
-  particles.forEach(p=>{
-    const pos=iso(p.gx,p.gy,p.gz);
-    X.globalAlpha=p.life;X.fillStyle=p.color;
-    X.beginPath();X.arc(pos.x-cx,pos.y-cy,p.size,0,Math.PI*2);X.fill();
-  });
-  X.globalAlpha=1;
-  floats.forEach(f=>{
-    const pos=iso(f.gx,f.gy,f.gz);
-    X.globalAlpha=f.life;X.fillStyle=f.col;
-    X.font='bold 15px Arial';X.textAlign='center';
-    X.fillText(f.txt,pos.x-cx,pos.y-cy);
-  });
-  X.globalAlpha=1;
-}
-
-// ===== 背景 =====
-function drawBG(){
-  const t=getTheme(cur);
-  const gr=X.createLinearGradient(0,0,0,GH);
-  gr.addColorStop(0,t.sky1);gr.addColorStop(1,t.sky2);
-  X.fillStyle=gr;X.fillRect(0,0,GW,GH);
-
-  // 星空
-  X.fillStyle='rgba(255,255,255,0.25)';
-  for(let i=0;i<60;i++){
-    const fx2=(i*137.5+gt*3)%(GW+80)-40;
-    const fy2=(i*97.3+Math.sin(gt*0.5+i)*15)%GH;
-    const twk=Math.sin(gt*2+i*0.7)*0.3+0.5;
-    X.globalAlpha=twk*0.35;
-    X.beginPath();X.arc(fx2,fy2,(i%3)+0.8,0,Math.PI*2);X.fill();
-  }
-  X.globalAlpha=1;
-
-  // 远景建筑剪影
-  X.save();X.globalAlpha=0.05;
-  drawCube(60-camTgt.x*0.01,280,3,3,5,'#888','#555','#444',0.05);
-  drawCube(350+camTgt.y*0.01,240,2,2,7,'#888','#555','#444',0.04);
-  X.restore();
-}
-
-// ===== UI（深色背景+高对比度） =====
-function drawUI(){
-  // 顶部深色面板
-  X.fillStyle='rgba(0,0,0,0.55)';
+// ====== UI ======
+function roundRect(x, y, w, h, r) {
   X.beginPath();
-  roundRect(X,0,0,GW,60,0);
+  X.moveTo(x+r,y); X.lineTo(x+w-r,y);
+  X.quadraticCurveTo(x+w,y,x+w,y+r); X.lineTo(x+w,y+h-r);
+  X.quadraticCurveTo(x+w,y+h,x+w-r,y+h); X.lineTo(x+r,y+h);
+  X.quadraticCurveTo(x,y+h,x,y+h-r); X.lineTo(x,y+r);
+  X.quadraticCurveTo(x,y,x+r,y);
+  X.closePath();
+}
+
+function drawUI() {
+  X.save();
+
+  // 顶部面板
+  X.fillStyle = 'rgba(0,0,0,0.55)';
+  roundRect(10, 10, GW - 20, 62, 12);
   X.fill();
 
-  // 分数居中
-  X.fillStyle='#fff';X.font='bold 24px Arial';X.textAlign='center';
-  X.fillText(`⭐ ${score}`,GW/2,40);
+  // 分数
+  X.fillStyle = '#fff'; X.font = 'bold 20px Arial';
+  X.textAlign = 'left'; X.textBaseline = 'middle';
+  X.fillText('🏆 ' + score, 22, 28);
 
-  // 层级左侧
-  X.fillStyle='rgba(255,255,255,0.8)';X.font='bold 13px Arial';
-  X.textAlign='left';X.fillText(`🏔 第 ${cur} 级`,16,38);
+  // 最高分
+  X.font = '10px Arial'; X.fillStyle = '#999';
+  X.fillText('最高 ' + best, 22, 46);
 
-  // 最高分右侧
-  X.textAlign='right';X.fillText(`👑 ${best}`,GW-16,38);
+  // 生命
+  X.textAlign = 'right'; X.font = '18px Arial';
+  var h = '';
+  for (var i = 0; i < 3; i++) h += i < lives ? '❤️' : '🖤';
+  X.fillText(h, GW - 22, 28);
+
+  // 步数
+  X.font = '10px Arial'; X.fillStyle = '#999';
+  X.fillText('第 ' + step + ' 步', GW - 22, 46);
+
+  // 【机制②】钥匙数量显示
+  if (keys > 0) {
+    X.textAlign = 'center'; X.font = 'bold 14px Arial';
+    X.fillStyle = '#ffd700';
+    X.fillText('🔑 x' + keys, GW / 2, 28);
+  }
+
+  // 已开宝箱
+  if (chestsOpened > 0) {
+    X.textAlign = 'center'; X.font = '10px Arial';
+    X.fillStyle = '#4488ff';
+    X.fillText('📦 x' + chestsOpened, GW / 2, 46);
+  }
 
   // Combo
-  if(P.combo>1){
+  if (combo > 1 && comboT > 0) {
+    X.textAlign = 'center'; X.font = 'bold 15px Arial';
+    X.globalAlpha = Math.min(1, comboT / 30);
+    X.fillStyle = '#ffcc00';
+    X.fillText('🔥 ' + combo + '连击! x' + (1 + Math.floor(combo/3)), GW/2, 62);
+    X.globalAlpha = 1;
+  }
+
+  X.restore();
+
+  // 底部提示
+  if (state === ST.PLAN) {
     X.save();
-    X.globalAlpha=Math.min(1,P.comboT/30);
-    X.fillStyle='rgba(0,0,0,0.4)';
-    X.beginPath();roundRect(X,GW/2-55,64,110,26,13);X.fill();
-    X.fillStyle='#ffd740';X.font='bold 15px Arial';X.textAlign='center';
-    X.fillText(`COMBO x${P.combo}`,GW/2,82);
+    X.fillStyle = 'rgba(0,0,0,0.6)';
+    roundRect(GW/2 - 140, GH - 80, 280, 55, 10);
+    X.fill();
+    X.fillStyle = '#aaddcc';
+    X.font = '13px Arial'; X.textAlign = 'center';
+    if (plannedPath.length === 0) {
+      X.fillText('👆 点击地块规划路线', GW/2, GH - 60);
+      X.fillStyle = '#888'; X.font = '11px Arial';
+      X.fillText('选择一条分支, 依次点击要走的地块', GW/2, GH - 42);
+    } else {
+      X.fillText('已选 ' + plannedPath.length + ' 步  |  继续点击或点 ✅ 出发', GW/2, GH - 60);
+      X.fillStyle = '#888'; X.font = '11px Arial';
+      X.fillText('点已选格可撤销最后一步', GW/2, GH - 42);
+    }
     X.restore();
   }
 
-  // 下一平台类型提示
-  if(cur+1<plats.length){
-    const np=plats[cur+1];
-    let hint='';
-    if(np.type==='illusion') hint='✨ 视错觉通道';
-    else if(np.type==='fold') hint='🌀 空间折叠';
-    else if(np.type==='penrose') hint='♾️ 彭罗斯阶梯';
-    else if(np.type==='crumble') hint='⚠️ 碎裂平台';
-    else if(np.type==='float') hint='☁️ 漂浮平台';
-    if(hint){
-      X.fillStyle='rgba(0,0,0,0.5)';
-      X.beginPath();roundRect(X,GW/2-85,GH-52,170,32,16);X.fill();
-      X.fillStyle='#fff';X.font='bold 13px Arial';X.textAlign='center';
-      X.fillText(hint,GW/2,GH-31);
-    }
+  // 【机制③】确认按钮
+  if (state === ST.PLAN && plannedPath.length >= 2) {
+    drawConfirmButton();
   }
-
-  // 新手提示
-  if(cur<3&&state===ST.PLAY){
-    X.globalAlpha=0.6+Math.sin(gt*3)*0.3;
-    X.fillStyle='rgba(0,0,0,0.45)';
-    X.beginPath();roundRect(X,GW/2-95,GH-95,190,30,15);X.fill();
-    X.fillStyle='#fff';X.font='14px Arial';X.textAlign='center';
-    X.fillText('👆 长按屏幕前进',GW/2,GH-75);
-    X.globalAlpha=1;
+  if (state === ST.CONFIRM) {
+    drawConfirmButton();
   }
 }
 
-// ===== 菜单 =====
-function drawMenu(){
-  const gr=X.createLinearGradient(0,0,0,GH);
-  gr.addColorStop(0,'#2c1e4a');gr.addColorStop(0.5,'#1a1230');gr.addColorStop(1,'#0e0a1e');
-  X.fillStyle=gr;X.fillRect(0,0,GW,GH);
+// 确认出发按钮
+var confirmBtnRect = { x: GW/2 - 55, y: GH - 140, w: 110, h: 42 };
+function drawConfirmButton() {
+  X.save();
+  var bx = confirmBtnRect.x, by = confirmBtnRect.y;
+  var pulse = 0.9 + Math.sin(gt * 0.1) * 0.1;
 
-  // 星空
-  X.fillStyle='rgba(255,255,255,0.3)';
-  for(let i=0;i<50;i++){
-    const fx3=(i*131+gt*5)%(GW+60)-30;
-    const fy3=(i*89+Math.sin(gt+i)*10)%GH;
-    X.globalAlpha=Math.sin(gt*1.5+i)*0.2+0.3;
-    X.beginPath();X.arc(fx3,fy3,(i%3)+0.5,0,Math.PI*2);X.fill();
-  }
-  X.globalAlpha=1;
+  X.fillStyle = '#33bb66';
+  X.shadowColor = '#33bb66'; X.shadowBlur = 10 * pulse;
+  roundRect(bx, by, confirmBtnRect.w, confirmBtnRect.h, 12);
+  X.fill();
+  X.shadowBlur = 0;
 
-  // 装饰方块
-  X.save();X.globalAlpha=0.12;
-  drawCube(80,220,2,2,2.5,'#c8b498','#9a8068','#887058',0.12);
-  drawCube(310,200,1.5,2.5,3.5,'#98aac8','#687890','#586878',0.1);
-  drawCube(190,380,2.5,1.5,1.5,'#a8c898','#789068','#688058',0.1);
+  X.fillStyle = '#fff'; X.font = 'bold 17px Arial';
+  X.textAlign = 'center'; X.textBaseline = 'middle';
+  X.fillText('✅ 出发!', GW/2, by + confirmBtnRect.h / 2);
   X.restore();
-
-  // 标题
-  X.fillStyle='#fff';X.font='bold 34px Arial';X.textAlign='center';
-  X.fillText('不可能的阶梯',GW/2,145);
-  X.fillStyle='rgba(255,255,255,0.45)';X.font='15px Arial';
-  X.fillText('IMPOSSIBLE STAIRS',GW/2,172);
-
-  // 角色
-  drawMenuChar();
-
-  X.fillStyle='rgba(255,255,255,0.55)';X.font='15px Arial';X.textAlign='center';
-  X.fillText(`最高记录: ⭐ ${best}`,GW/2,415);
-
-  // 开始按钮
-  const bp2=Math.sin(gt*3)*3;
-  X.fillStyle='#2d8f4e';
-  X.beginPath();roundRect(X,GW/2-90,450-bp2,180,55,28);X.fill();
-  // 按钮边框
-  X.strokeStyle='rgba(255,255,255,0.2)';X.lineWidth=2;
-  X.beginPath();roundRect(X,GW/2-90,450-bp2,180,55,28);X.stroke();
-  X.fillStyle='#fff';X.font='bold 22px Arial';
-  X.fillText('点击开始',GW/2,485-bp2);
-
-  X.fillStyle='rgba(255,255,255,0.35)';X.font='12px Arial';
-  X.fillText('长按屏幕 → 角色在等轴世界中前进',GW/2,545);
-  X.fillText('躲避障碍 · 收集星星 · 探索不可能空间',GW/2,565);
 }
 
-function drawMenuChar(){
-  X.save();X.translate(GW/2,305);
-  const bb=Math.sin(gt*1.5)*2;
-  X.translate(0,bb);
-  // 简化绘制
-  X.beginPath();X.arc(0,-8,9,0,Math.PI*2);X.fillStyle='#2d8f4e';X.fill();X.strokeStyle='#1a5c32';X.lineWidth=1.8;X.stroke();
-  X.beginPath();
-  X.moveTo(-3,1);X.quadraticCurveTo(-12,10,-5,17);X.quadraticCurveTo(2,23,9,30);
-  X.lineTo(11,34);X.lineTo(5,34);X.quadraticCurveTo(0,27,-2,21);
-  X.quadraticCurveTo(-7,27,-11,34);X.lineTo(-13,34);X.lineTo(-7,30);
-  X.quadraticCurveTo(-2,23,3,17);X.quadraticCurveTo(11,10,3,1);X.closePath();
-  X.fillStyle='#2d8f4e';X.fill();X.strokeStyle='#1a5c32';X.lineWidth=1.8;X.stroke();
-  X.beginPath();X.ellipse(0,14,2.5,3.5,0,0,Math.PI*2);X.fillStyle='rgba(255,255,255,0.5)';X.fill();
-  const bs2=P.blink>0?Math.max(0.1,1-P.blink):1;
-  X.beginPath();X.arc(-4.5,-12,5.5,0,Math.PI*2);X.arc(4.5,-12,5.5,0,Math.PI*2);X.fillStyle='#1a5c32';X.fill();
-  X.beginPath();X.ellipse(-4.5,-12,4.5,4.5*bs2,0,0,Math.PI*2);X.fillStyle='#fff';X.fill();
-  X.beginPath();X.ellipse(4.5,-12,4.5,4.5*bs2,0,0,Math.PI*2);X.fillStyle='#fff';X.fill();
-  if(bs2>0.3){
-    X.beginPath();X.arc(-4.5,-12,2.2,0,Math.PI*2);X.fillStyle='#1a237e';X.fill();
-    X.beginPath();X.arc(4.5,-12,2.2,0,Math.PI*2);X.fillStyle='#1a237e';X.fill();
+function drawResult() {
+  if (state !== ST.RESULT) return;
+  var a = Math.min(1, resultT / 10);
+  X.save();
+  X.globalAlpha = a;
+  X.textAlign = 'center'; X.textBaseline = 'middle';
+  X.fillStyle = resultCol === '#22ff66' ? 'rgba(34,255,102,0.06)' : 'rgba(255,50,50,0.06)';
+  X.fillRect(0, 0, GW, GH);
+  X.font = 'bold 30px Arial'; X.fillStyle = resultCol;
+  X.shadowColor = resultCol; X.shadowBlur = 15;
+  X.fillText(resultTxt, GW/2, GH * 0.22);
+  X.shadowBlur = 0;
+  X.restore();
+}
+
+function drawStars() {
+  X.save();
+  for (var i = 0; i < stars.length; i++) {
+    var s = stars[i];
+    X.globalAlpha = 0.2 + Math.sin(gt * s.sp + i) * 0.25;
+    X.fillStyle = '#fff';
+    X.beginPath(); X.arc(s.x, s.y, s.s, 0, Math.PI*2); X.fill();
   }
-  X.beginPath();X.arc(0,-2,3.5,0.1*Math.PI,0.9*Math.PI);X.strokeStyle='#1a5c32';X.lineWidth=1.3;X.stroke();
-  for(let s of[-1,1]){
-    X.save();X.translate(s*7,34);
-    X.beginPath();X.ellipse(0,3.5,8,4.5,0,0,Math.PI*2);X.fillStyle='#2c2c2c';X.fill();
-    X.beginPath();X.moveTo(-3.5,1.5);X.quadraticCurveTo(0,4,4.5,0.5);X.strokeStyle='#f5a623';X.lineWidth=1.5;X.stroke();
-    X.restore();
+  X.globalAlpha = 1; X.restore();
+}
+
+function drawMenu() {
+  X.save();
+  X.fillStyle = 'rgba(10,6,24,0.9)';
+  X.fillRect(0, 0, GW, GH);
+  drawStars();
+  X.textAlign = 'center'; X.textBaseline = 'middle';
+
+  X.font = 'bold 38px Arial'; X.fillStyle = '#4ddb6a';
+  X.shadowColor = '#4ddb6a'; X.shadowBlur = 15;
+  X.fillText('不可能的阶梯', GW/2, GH*0.18);
+  X.shadowBlur = 0;
+
+  X.font = '14px Arial'; X.fillStyle = '#8888aa';
+  X.fillText('观察 · 推理 · 选择 · 规划', GW/2, GH*0.24);
+
+  X.font = '13px Arial'; X.fillStyle = '#aaaacc';
+  var rules = [
+    '🗺️ 角色走到分叉点自动停下',
+    '👀 只能看到分支前 2 格，后面是迷雾',
+    '👆 依次点击地块画出想走的路线',
+    '✅ 点击「出发」确认，角色逐步前进',
+    '',
+    '🌿⭐💎 绿色路 → 安全得分',
+    '💀⚡🔥 红色路 → 危险扣命',
+    '🍄🔮 灰色路 → 未知风险',
+    '',
+    '🔑 险路尽头藏钥匙 → 冒险去拿?',
+    '📦 安全路尽头有宝箱 → 需要钥匙才能开!',
+    '🔥 连续选对 → 连击加成!'
+  ];
+  for (var i = 0; i < rules.length; i++) {
+    X.fillText(rules[i], GW/2, GH*0.32 + i * 22);
+  }
+
+  var btnY = GH * 0.78;
+  X.fillStyle = '#4ddb6a';
+  roundRect(GW/2-80, btnY-25, 160, 50, 15);
+  X.fill();
+  X.fillStyle = '#fff'; X.font = 'bold 20px Arial';
+  X.fillText('开始游戏', GW/2, btnY);
+
+  if (best > 0) {
+    X.font = '13px Arial'; X.fillStyle = '#ffd700';
+    X.fillText('🏆 最高分: ' + best, GW/2, btnY + 45);
   }
   X.restore();
 }
 
-// ===== 结束画面 =====
-function drawOver(){
-  X.fillStyle='rgba(0,0,0,0.7)';X.fillRect(0,0,GW,GH);
-  X.fillStyle='#ef5350';X.font='bold 36px Arial';X.textAlign='center';
-  X.fillText('💀 坠落了',GW/2,240);
-  X.fillStyle='#fff';X.font='20px Arial';
-  X.fillText(`⭐ 得分: ${score}`,GW/2,300);
-  X.fillText(`🏔 到达: 第 ${cur} 级`,GW/2,332);
-  if(score>=best&&score>0){
-    X.fillStyle='#ffd740';X.font='bold 18px Arial';
-    X.fillText('🎉 新纪录！',GW/2,372);
+function drawOver() {
+  X.save();
+  X.fillStyle = 'rgba(10,6,24,0.85)';
+  X.fillRect(0, 0, GW, GH);
+  X.textAlign = 'center'; X.textBaseline = 'middle';
+
+  X.font = 'bold 34px Arial'; X.fillStyle = '#ff4466';
+  X.shadowColor = '#ff4466'; X.shadowBlur = 12;
+  X.fillText('游戏结束', GW/2, GH*0.25);
+  X.shadowBlur = 0;
+
+  X.font = '18px Arial'; X.fillStyle = '#fff';
+  X.fillText('得分: ' + score, GW/2, GH*0.35);
+  X.fillText('步数: ' + step + '  |  宝箱: ' + chestsOpened, GW/2, GH*0.40);
+
+  if (score >= best && score > 0) {
+    X.fillStyle = '#ffd700'; X.font = 'bold 18px Arial';
+    X.fillText('🎉 新纪录!', GW/2, GH*0.47);
   }
-  const bp3=Math.sin(gt*3)*2;
-  X.fillStyle='#2d8f4e';
-  X.beginPath();roundRect(X,GW/2-80,415-bp3,160,50,25);X.fill();
-  X.fillStyle='#fff';X.font='bold 20px Arial';
-  X.fillText('再来一次',GW/2,447-bp3);
+
+  var btnY = GH*0.58;
+  X.fillStyle = '#4ddb6a';
+  roundRect(GW/2-80, btnY-25, 160, 50, 15);
+  X.fill();
+  X.fillStyle = '#fff'; X.font = 'bold 20px Arial';
+  X.fillText('再来一局', GW/2, btnY);
+  X.restore();
 }
 
-// ===== 逻辑 =====
-function update(){
-  gt+=1/60;
-  if(state!==ST.PLAY) {
-    // 菜单角色眨眼
-    P.blinkT++;if(P.blinkT>180){P.blink=1;P.blinkT=0;}
-    if(P.blink>0){P.blink-=0.12;if(P.blink<0)P.blink=0;}
-    return;
-  }
+// 粒子
+function addP(gx,gy,gz,col,n){for(var i=0;i<n;i++)particles.push({x:gx,y:gy,z:gz,vx:(Math.random()-0.5)*0.25,vy:(Math.random()-0.5)*0.25,vz:Math.random()*0.15+0.05,life:35+Math.random()*20,maxLife:55,color:col,size:Math.random()*2.5+1});}
+function addFloat(gx,gy,gz,txt,col){floats.push({gx:gx,gy:gy,gz:gz,text:txt,color:col,life:55});}
+function updateParts(){for(var i=particles.length-1;i>=0;i--){var p=particles[i];p.x+=p.vx;p.y+=p.vy;p.z+=p.vz;p.vz-=0.004;p.life--;if(p.life<=0)particles.splice(i,1);}for(var i=floats.length-1;i>=0;i--){var f=floats[i];f.gz+=0.02;f.life--;if(f.life<=0)floats.splice(i,1);}}
+function drawParts(ox,oy){for(var i=0;i<particles.length;i++){var p=particles[i],sp=iso(p.x,p.y,p.z);X.globalAlpha=p.life/p.maxLife;X.fillStyle=p.color;X.beginPath();X.arc(sp.x-ox,sp.y-oy,p.size,0,Math.PI*2);X.fill();}X.globalAlpha=1;for(var i=0;i<floats.length;i++){var f=floats[i],sp=iso(f.gx,f.gy,f.gz);X.globalAlpha=Math.min(1,f.life/15);X.fillStyle=f.color;X.font='bold 15px Arial';X.textAlign='center';X.fillText(f.text,sp.x-ox,sp.y-oy);}X.globalAlpha=1;}
 
-  P.blinkT++;if(P.blinkT>180+Math.random()*120){P.blink=1;P.blinkT=0;}
-  if(P.blink>0){P.blink-=0.15;if(P.blink<0)P.blink=0;}
-  if(P.invT>0)P.invT--;
-  if(P.hurt){P.hurtT--;if(P.hurtT<=0)P.hurt=false;}
-  if(P.comboT>0){P.comboT--;if(P.comboT<=0)P.combo=0;}
+// ====== 更新 ======
+function update() {
+  gt++;
+  P.bounce += 0.07;
+  if (comboT > 0) comboT--;
+  if (comboT <= 0) combo = 0;
 
-  if(P.falling){
-    P.fallV+=0.12;P.rz-=P.fallV*0.04;
-    if(P.fallV>25) gameOver();
-    // 相机继续跟随
-    const cp2=plats[cur];
-    if(cp2){
-      const pos2=iso(cp2.gx,cp2.gy,cp2.gz);
-      camTgt.x=pos2.x-GW/2;camTgt.y=pos2.y-GH*0.45;
+  // 自动行走(主路段)
+  if (state === ST.WALK && walkQueue.length > 0) {
+    walkT += walkSpeed;
+    if (walkT >= 1) {
+      var arrived = walkQueue.shift();
+      P.gx = arrived.gx; P.gy = arrived.gy; P.gz = arrived.gz;
+      P.facing = arrived.gx > (walkFrom ? walkFrom.gx : P.gx) ? 1 : -1;
+      walkT = 0;
+      walkFrom = { gx: P.gx, gy: P.gy, gz: P.gz };
+      if (walkQueue.length === 0) {
+        // 到达分叉点, 进入规划阶段
+        state = ST.PLAN;
+        plannedPath = [];
+      }
     }
-    camOff.x+=(camTgt.x-camOff.x)*0.06;
-    camOff.y+=(camTgt.y-camOff.y)*0.06;
-    updateParts();
-    return;
   }
 
-  // 长按移动
-  if(pressed&&!P.hurt){
-    P.moving=true;P.legA+=0.25;P.bodyB+=0.2;
+  // 【机制③】执行规划路线 — 角色逐步行走, 每到一格结算
+  if (state === ST.EXEC && execQueue.length > 0) {
+    execT += execSpeed;
+    if (execT >= 1) {
+      var arrived = execQueue.shift();
+      P.gx = arrived.gx; P.gy = arrived.gy; P.gz = arrived.gz;
+      P.facing = arrived.gx > (execFrom ? execFrom.gx : P.gx) ? 1 : -1;
+      execT = 0;
+      execFrom = { gx: P.gx, gy: P.gy, gz: P.gz };
 
-    const ni=cur+1;
-    if(ni<plats.length){
-      const np=plats[ni];
-      if(!np.alive){P.falling=true;P.fallV=0;return;}
+      // 【机制①】揭开迷雾 — 角色踩到的格子揭开真实颜色和物品
+      var tile = findTile(P.gx, P.gy, P.gz);
+      if (tile && tile.foggy && !tile.revealed) {
+        tile.revealed = true;
+        tile.color = tile.realColor;
+        tile.topColor = tile.realTopColor;
+        // 揭开动画
+        addP(P.gx, P.gy, P.gz, '#aabbcc', 5);
+      }
 
-      let tgz=np.gz;
-      if(np.type==='float') tgz+=Math.sin(gt*1.5+np.fOff)*0.3;
+      // 逐步结算该格物品
+      if (tile) {
+        settleOneTile(tile);
+      }
 
-      const dx2=np.gx-P.rx, dy2=np.gy-P.ry, dz2=tgz-P.rz;
-      const dist2=Math.sqrt(dx2*dx2+dy2*dy2+dz2*dz2);
-      const spd2=0.08+Math.min(score*0.0002,0.025);
+      // 走完了?
+      if (execQueue.length === 0) {
+        step++;
+        finishBranch();
+      }
+    }
+  }
 
-      if(dist2>spd2*1.5){
-        const f=spd2/Math.max(dist2*0.25,0.3);
-        P.rx+=dx2*f; P.ry+=dy2*f; P.rz+=dz2*f;
-        if(dx2>0.1) P.facing=1; else if(dx2<-0.1) P.facing=-1;
+  // 结果显示
+  if (state === ST.RESULT) {
+    resultT--;
+    if (resultT <= 0) {
+      if (lives <= 0) {
+        state = ST.OVER;
+        if (score > best) { best = score; try { localStorage.setItem('isoV8', best); } catch(e) {} }
       } else {
-        P.rx=np.gx;P.ry=np.gy;P.rz=tgz;
-
-        // 到达！
-        cur=ni;np.visited=true;
-
-        // 碎裂
-        if(np.type==='crumble') np.crumT=0.1;
-
-        // 计分
-        let pts=1;
-        if(np.type==='illusion'){pts=5;addFloat(np.gx,np.gy,np.gz+1,'视错觉 +5','#c080ff');}
-        else if(np.type==='fold'){pts=8;addFloat(np.gx,np.gy,np.gz+1,'空间折叠 +8','#ffaa00');}
-        else if(np.type==='penrose'){pts=6;addFloat(np.gx,np.gy,np.gz+1,'彭罗斯 +6','#4dd0e1');}
-        else if(np.type==='float') pts=2;
-        score+=pts;
-
-        // 星星
-        if(np.star&&!np.starGot){
-          np.starGot=true;score+=5;
-          P.combo++;P.comboT=120;
-          addP(np.gx,np.gy,np.gz+0.5,'#ffd700',10);
-          addFloat(np.gx,np.gy,np.gz+1.2,`+${5*Math.max(1,P.combo)}`,'#ffd700');
-          if(P.combo>1) score+=(P.combo-1)*2;
-        }
-
-        // 障碍
-        if(np.obs&&np.obsAct&&P.invT<=0){
-          P.hurt=true;P.hurtT=25;P.invT=90;
-          score=Math.max(0,score-5);np.obsAct=false;shakeT=12;
-          addP(np.gx,np.gy,np.gz+0.5,'#ef5350',10);
-          addFloat(np.gx,np.gy,np.gz+1,'-5','#ef5350');
-          P.combo=0;
-        }
-
-        addP(np.gx,np.gy,np.gz,getTheme(cur).accent||'#7bed9f',4);
+        // 生成下一段主路 + 新分叉
+        prepareNext();
       }
     }
-  } else {
-    P.moving=false;
   }
-
-  // 碎裂
-  plats.forEach(p=>{
-    if(p.type==='crumble'&&p.crumT>0&&p.crumT<50){
-      p.crumT+=0.6;
-      if(p.idx===cur&&p.crumT>18&&!P.falling){
-        P.falling=true;P.fallV=0;
-      }
-    }
-  });
 
   // 相机
-  const cp3=plats[cur];
-  if(cp3){
-    const pos3=iso(cp3.gx,cp3.gy,cp3.gz);
-    camTgt.x=pos3.x-GW/2;camTgt.y=pos3.y-GH*0.45;
-  }
-  camOff.x+=(camTgt.x-camOff.x)*0.06;
-  camOff.y+=(camTgt.y-camOff.y)*0.06;
-  if(shakeT>0) shakeT--;
+  updateCamera();
+  if (shakeT > 0) shakeT--;
   updateParts();
 }
 
-function gameOver(){
-  state=ST.OVER;
-  if(score>best){best=score;localStorage.setItem('isoBest2',best);}
-  shakeT=15;addP(P.rx,P.ry,P.rz,'#ef5350',18);
-}
-
-function startGame(){
-  state=ST.PLAY;score=0;cur=0;
-  P.rx=0;P.ry=0;P.rz=0;
-  P.moving=false;P.hurt=false;P.invT=0;P.combo=0;P.comboT=0;
-  P.falling=false;P.fallV=0;P.facing=1;
-  particles=[];floats=[];
-  genPlats();
-  const sp2=plats[0];
-  P.rx=sp2.gx;P.ry=sp2.gy;P.rz=sp2.gz;
-  const pos4=iso(sp2.gx,sp2.gy,sp2.gz);
-  camOff.x=pos4.x-GW/2;camOff.y=pos4.y-GH*0.45;
-  camTgt.x=camOff.x;camTgt.y=camOff.y;
-}
-
-// ===== 渲染 =====
-function draw(){
-  const shx=shakeT>0?(Math.random()-0.5)*shakeT*0.5:0;
-  const shy=shakeT>0?(Math.random()-0.5)*shakeT*0.5:0;
-  X.save();X.translate(shx,shy);
-
-  if(state===ST.MENU){
-    drawMenu();
-  } else {
-    drawBG();
-
-    // 收集可见平台并排序
-    const vis=[];
-    const si=Math.max(0,cur-6), ei=Math.min(plats.length,cur+25);
-    for(let i=si;i<ei;i++){
-      if(plats[i]&&plats[i].alive) vis.push(plats[i]);
+// 逐格结算
+function settleOneTile(tile) {
+  for (var i = 0; i < tile.items.length; i++) {
+    var item = tile.items[i];
+    switch(item.hint) {
+      case 'good':
+        var pts = 2 * (1 + Math.floor(combo / 3));
+        score += pts;
+        addFloat(tile.gx, tile.gy, tile.gz + 1, '+' + pts, '#44ff88');
+        addP(tile.gx, tile.gy, tile.gz, '#44ff88', 3);
+        break;
+      case 'bad':
+        // 单格上的bad物品: 小扣分, 不扣命(只有分支整体结果才扣命)
+        score = Math.max(0, score - 1);
+        addFloat(tile.gx, tile.gy, tile.gz + 1, '-1', '#ff6666');
+        shakeT = 5;
+        break;
+      case 'key':
+        // 【机制②】拾取钥匙!
+        keys++;
+        addFloat(tile.gx, tile.gy, tile.gz + 1.5, '🔑 获得钥匙!', '#ffd700');
+        addP(tile.gx, tile.gy, tile.gz, '#ffd700', 12);
+        break;
+      case 'chest':
+        // 【机制②】遇到宝箱
+        if (keys > 0) {
+          keys--;
+          chestsOpened++;
+          var chestPts = 50 * (1 + Math.floor(combo / 3));
+          score += chestPts;
+          addFloat(tile.gx, tile.gy, tile.gz + 1.5, '📦 开启! +' + chestPts, '#4488ff');
+          addP(tile.gx, tile.gy, tile.gz, '#4488ff', 20);
+        } else {
+          addFloat(tile.gx, tile.gy, tile.gz + 1, '📦 需要🔑', '#888888');
+        }
+        break;
+      case 'neutral':
+        // 中性: 随机小奖或小罚
+        if (Math.random() < 0.5) {
+          score += 1;
+          addFloat(tile.gx, tile.gy, tile.gz + 1, '+1', '#aaaacc');
+        } else {
+          addFloat(tile.gx, tile.gy, tile.gz + 1, '...', '#888888');
+        }
+        break;
     }
-    vis.sort((a,b)=>(a.gx+a.gy-a.gz)-(b.gx+b.gy-b.gz));
-
-    drawConns(camOff.x,camOff.y);
-
-    const cd=P.rx+P.ry-P.rz;
-    let drawn=false;
-    vis.forEach(p=>{
-      const pd=p.gx+p.gy-p.gz;
-      if(!drawn&&cd<=pd){drawChar(camOff.x,camOff.y);drawn=true;}
-      drawPlat(p,camOff.x,camOff.y);
-    });
-    if(!drawn) drawChar(camOff.x,camOff.y);
-
-    drawParts(camOff.x,camOff.y);
-    drawUI();
-    if(state===ST.OVER) drawOver();
   }
+}
+
+// 分支走完后的总结算
+var currentBranchType = '';
+function finishBranch() {
+  // 找到当前走的是哪个分支
+  var br = null;
+  for (var i = 0; i < branches.length; i++) {
+    var brPath = branches[i].path;
+    if (brPath.length > 0) {
+      var lastBr = brPath[brPath.length - 1];
+      if (lastBr.gx === P.gx && lastBr.gy === P.gy && lastBr.gz === P.gz) {
+        br = branches[i]; break;
+      }
+    }
+  }
+
+  if (!br) {
+    // 安全路径中间结束
+    resultTxt = '🌿 安全通过!';
+    resultCol = '#22ff66';
+    combo++; comboT = 120;
+    state = ST.RESULT; resultT = 40;
+    return;
+  }
+
+  currentBranchType = br.type;
+  var isSafe = (br.reward >= 0);
+
+  if (br.type === 'key') {
+    // 钥匙路径: 扣一条命, 但拿到了钥匙(在逐格结算中已拾取)
+    lives--;
+    shakeT = 15;
+    resultTxt = '🔑 冒险获得钥匙! ❤️-1';
+    resultCol = '#ffd700';
+    combo = 0; comboT = 0;
+    addP(P.gx, P.gy, P.gz, '#ffd700', 10);
+  } else if (br.type === 'chest') {
+    // 宝箱路径: 安全, 宝箱结算已在逐格中处理
+    resultTxt = '📦 发现宝箱!';
+    resultCol = '#4488ff';
+    combo++; comboT = 120;
+    addP(P.gx, P.gy, P.gz, '#4488ff', 10);
+  } else if (isSafe) {
+    var multi = 1 + Math.floor(combo / 3);
+    var pts = br.reward * multi;
+    score += pts;
+    combo++; comboT = 120;
+    resultTxt = br.label + ' +' + pts + '分!';
+    resultCol = '#22ff66';
+    addP(P.gx, P.gy, P.gz, '#44ff88', 12);
+    addFloat(P.gx, P.gy, P.gz + 1, '+' + pts, '#44ff88');
+  } else {
+    lives--;
+    combo = 0; comboT = 0; shakeT = 18;
+    var penalty = Math.abs(br.reward) * 3;
+    score = Math.max(0, score - penalty);
+    resultTxt = br.label + '! ❤️-1 (-' + penalty + ')';
+    resultCol = '#ff3344';
+    addP(P.gx, P.gy, P.gz, '#ff4444', 16);
+    addFloat(P.gx, P.gy, P.gz + 1, '-' + penalty, '#ff4444');
+  }
+
+  state = ST.RESULT;
+  resultT = 50;
+}
+
+// 准备下一段路
+function prepareNext() {
+  var extPath = generateMainPath(P.gx, P.gy, P.gz, 3 + Math.floor(Math.random() * 3));
+  walkQueue = [];
+  for (var i = 1; i < extPath.length; i++) {
+    mainPath.push(extPath[i]);
+    walkQueue.push(extPath[i]);
+  }
+  var last = extPath[extPath.length - 1];
+  generateFork(last.gx, last.gy, last.gz);
+
+  walkFrom = { gx: P.gx, gy: P.gy, gz: P.gz };
+  walkT = 0;
+  state = ST.WALK;
+  plannedPath = [];
+}
+
+function updateCamera() {
+  var cp = iso(P.gx, P.gy, P.gz);
+
+  if (state === ST.WALK && walkFrom && walkQueue.length > 0) {
+    var to = walkQueue[0];
+    cp = iso(
+      walkFrom.gx + (to.gx - walkFrom.gx) * walkT,
+      walkFrom.gy + (to.gy - walkFrom.gy) * walkT,
+      walkFrom.gz + (to.gz - walkFrom.gz) * walkT
+    );
+  }
+
+  if (state === ST.EXEC && execFrom && execQueue.length > 0) {
+    var to = execQueue[0];
+    cp = iso(
+      execFrom.gx + (to.gx - execFrom.gx) * execT,
+      execFrom.gy + (to.gy - execFrom.gy) * execT,
+      execFrom.gz + (to.gz - execFrom.gz) * execT
+    );
+  }
+
+  // 规划阶段: 相机稍微拉远看到分支全貌
+  if ((state === ST.PLAN || state === ST.CONFIRM) && branches.length > 0) {
+    var avgX = 0, avgY = 0, cnt = 0;
+    for (var i = 0; i < branches.length; i++) {
+      var mid = branches[i].path[Math.min(1, branches[i].path.length - 1)];
+      var mp = iso(mid.gx, mid.gy, mid.gz);
+      avgX += mp.x; avgY += mp.y; cnt++;
+    }
+    var pp = iso(P.gx, P.gy, P.gz);
+    cp = { x: (avgX/cnt + pp.x * 2) / 3, y: (avgY/cnt + pp.y * 2) / 3 };
+  }
+
+  camTX = cp.x - GW / 2;
+  camTY = cp.y - GH * 0.38;
+  camX += (camTX - camX) * 0.05;
+  camY += (camTY - camY) * 0.05;
+}
+
+// ====== 主绘制 ======
+function draw() {
+  var grad = X.createLinearGradient(0, 0, 0, GH);
+  grad.addColorStop(0, '#0a0618');
+  grad.addColorStop(0.4, '#10102a');
+  grad.addColorStop(1, '#1a1535');
+  X.fillStyle = grad; X.fillRect(0, 0, GW, GH);
+
+  if (state === ST.MENU) { drawMenu(); return; }
+
+  drawStars();
+
+  var ox = camX, oy = camY;
+  if (shakeT > 0) {
+    ox += (Math.random()-0.5)*shakeT*1.2;
+    oy += (Math.random()-0.5)*shakeT*1.2;
+  }
+
+  X.save();
+  drawAllTiles(ox, oy);
+  drawPlannedPath(ox, oy);
+  drawChar(ox, oy);
+  drawBranchMarkers(ox, oy);
+  drawParts(ox, oy);
   X.restore();
+
+  drawUI();
+  drawResult();
+  if (state === ST.OVER) drawOver();
 }
 
-function loop(){update();draw();requestAnimationFrame(loop);}
+function loop() { update(); draw(); window.requestAnimationFrame(loop); }
 
-// ===== 输入 =====
-function onDown(e){e.preventDefault();pressed=true;
-  if(state===ST.MENU)startGame();
-  else if(state===ST.OVER)startGame();
+// ====== 【机制③】输入处理 — 路径规划交互 ======
+function getPos(e) {
+  var rect = C.getBoundingClientRect();
+  var x, y;
+  if (e.touches && e.touches.length > 0) {
+    x = e.touches[0].clientX - rect.left; y = e.touches[0].clientY - rect.top;
+  } else {
+    x = e.clientX - rect.left; y = e.clientY - rect.top;
+  }
+  return { x: x / sc, y: y / sc };
 }
-function onUp(e){e.preventDefault();pressed=false;}
-C.addEventListener('mousedown',onDown);
-C.addEventListener('mouseup',onUp);
-C.addEventListener('mouseleave',onUp);
-C.addEventListener('touchstart',onDown,{passive:false});
-C.addEventListener('touchend',onUp,{passive:false});
-C.addEventListener('touchcancel',onUp,{passive:false});
-C.addEventListener('contextmenu',e=>e.preventDefault());
 
-// ===== 工具 =====
-function lighten(hex,amt){
-  let r,g,b;
-  if(hex[0]==='#'){r=parseInt(hex.slice(1,3),16);g=parseInt(hex.slice(3,5),16);b=parseInt(hex.slice(5,7),16);}
-  else return hex;
-  return `rgb(${Math.min(255,r+amt)},${Math.min(255,g+amt)},${Math.min(255,b+amt)})`;
+function handleTap(x, y) {
+  if (state === ST.MENU) { startGame(); return; }
+  if (state === ST.OVER) { startGame(); return; }
+  if (state === ST.WALK || state === ST.EXEC || state === ST.RESULT) return;
+
+  if (state === ST.PLAN || state === ST.CONFIRM) {
+    // 检查是否点了确认按钮
+    if (plannedPath.length >= 2) {
+      var bx = confirmBtnRect.x, by = confirmBtnRect.y;
+      if (x >= bx && x <= bx + confirmBtnRect.w && y >= by && y <= by + confirmBtnRect.h) {
+        confirmAndGo();
+        return;
+      }
+    }
+
+    // 检查点击了哪个地块
+    var bestDist = 9999, bestTile = null;
+    // 遍历所有分支地块
+    for (var i = 0; i < branches.length; i++) {
+      var br = branches[i];
+      for (var j = 0; j < br.path.length; j++) {
+        var pt = br.path[j];
+        var p = iso(pt.gx, pt.gy, pt.gz);
+        var dx = x - (p.x - camX), dy = y - (p.y - camY);
+        var d = Math.sqrt(dx*dx + dy*dy);
+        if (d < bestDist) {
+          bestDist = d;
+          bestTile = { gx: pt.gx, gy: pt.gy, gz: pt.gz, brIdx: i, pathIdx: j };
+        }
+      }
+    }
+
+    if (bestTile && bestDist < 40) {
+      handleTileClick(bestTile);
+    }
+  }
 }
-function roundRect(ctx,x,y,w,h,r){
-  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
-  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
-  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
-  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();
+
+/*
+ * 【机制③】地块点击逻辑
+ * 玩家依次点击地块来规划路线
+ * 规则:
+ *   - 第一步必须是某个分支的第一格(从分叉点出发)
+ *   - 后续步必须是同一分支的下一格(顺序前进)
+ *   - 点击已选的最后一格 = 撤销该步
+ *   - 不能跨分支选择
+ */
+function handleTileClick(tileInfo) {
+  var bIdx = tileInfo.brIdx;
+  var pIdx = tileInfo.pathIdx;
+
+  // 如果还没开始选, 只能选分支第一格
+  if (plannedPath.length === 0) {
+    if (pIdx === 0) {
+      plannedPath.push(tileInfo);
+      state = ST.PLAN;
+    }
+    return;
+  }
+
+  // 检查是否点了最后一步(撤销)
+  var lastP = plannedPath[plannedPath.length - 1];
+  if (lastP.gx === tileInfo.gx && lastP.gy === tileInfo.gy && lastP.gz === tileInfo.gz) {
+    plannedPath.pop();
+    if (plannedPath.length === 0) state = ST.PLAN;
+    return;
+  }
+
+  // 必须是同一分支
+  if (bIdx !== plannedPath[0].brIdx) return;
+
+  // 必须是路径中的下一格
+  var expectedIdx = plannedPath.length; // 因为第一步是pathIdx=0
+  if (pIdx === expectedIdx) {
+    plannedPath.push(tileInfo);
+  }
 }
+
+/*
+ * 【机制③】确认路线, 开始执行
+ * 角色沿 plannedPath 逐步行走
+ */
+function confirmAndGo() {
+  if (plannedPath.length < 2) return;
+  
+  execQueue = [];
+  for (var i = 0; i < plannedPath.length; i++) {
+    execQueue.push({ gx: plannedPath[i].gx, gy: plannedPath[i].gy, gz: plannedPath[i].gz });
+  }
+  execFrom = { gx: P.gx, gy: P.gy, gz: P.gz };
+  execT = 0;
+  state = ST.EXEC;
+}
+
+C.addEventListener('mousedown', function(e) { e.preventDefault(); var p = getPos(e); handleTap(p.x, p.y); });
+C.addEventListener('touchstart', function(e) { e.preventDefault(); var p = getPos(e); handleTap(p.x, p.y); }, { passive: false });
+C.addEventListener('contextmenu', function(e) { e.preventDefault(); });
 
 loop();
 </script>
