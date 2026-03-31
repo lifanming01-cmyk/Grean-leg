@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>不可能的阶梯 v8</title>
+<title>不可能的阶梯</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
-body{background:#0a0618;display:flex;justify-content:center;align-items:center;height:100vh;height:100dvh;overflow:hidden;font-family:'Arial',sans-serif}
+body{background:#0a3060;display:flex;justify-content:center;align-items:center;height:100vh;height:100dvh;overflow:hidden;font-family:'Arial',sans-serif}
 canvas{display:block;touch-action:none}
 </style>
 </head>
@@ -39,7 +39,7 @@ var T = 55; // 拉近镜头(原30)
 function iso(gx, gy, gz) {
   return {
     x: GW / 2 + (gx - gy) * T,
-    y: GH * 0.45 + (gx + gy) * T * 0.5 - gz * T * 0.72
+    y: GH * 0.52 + (gx + gy) * T * 0.5 - gz * T * 0.72
   };
 }
 
@@ -134,12 +134,12 @@ var BAD_ITEMS = ['skull','spike','fire','bat','web','bone','crack'];
 var NEUTRAL_ITEMS = ['mushroom','crystal','rune'];
 
 // 颜色主题
-var THEME_SAFE =   [{ color:'#3a8a5c', topColor:'#4ca870' },{ color:'#3a7a8a', topColor:'#4c98a8' },{ color:'#5a7a3a', topColor:'#72984c' }];
-var THEME_DANGER = [{ color:'#8a3a3a', topColor:'#a84c4c' },{ color:'#6a2a5a', topColor:'#883a72' },{ color:'#7a4a2a', topColor:'#985c3a' }];
-var THEME_NEUTRAL =[{ color:'#5a5a6a', topColor:'#727282' }];
-var THEME_FOG =     { color:'#3a3a4a', topColor:'#4a4a5a' }; // 迷雾格子的颜色
-var THEME_KEY =     { color:'#8a7a20', topColor:'#a89830' }; // 钥匙路径
-var THEME_CHEST =   { color:'#2a6a8a', topColor:'#3a82a8' }; // 宝箱路径
+var THEME_SAFE =   [{ color:'#b8bcc4', topColor:'#b8d828' },{ color:'#c0c4cc', topColor:'#c0e030' },{ color:'#aab0b8', topColor:'#a8d020' }];
+var THEME_DANGER = [{ color:'#786080', topColor:'#a858a0' },{ color:'#685070', topColor:'#984890' },{ color:'#706078', topColor:'#b060a8' }];
+var THEME_NEUTRAL =[{ color:'#7888a0', topColor:'#6888b0' }];
+var THEME_FOG =     { color:'#3a5070', topColor:'#4a6080' }; // 迷雾格子的颜色
+var THEME_KEY =     { color:'#a0a0a8', topColor:'#e0c030' }; // 钥匙路径
+var THEME_CHEST =   { color:'#8090a0', topColor:'#40b0d0' }; // 宝箱路径
 
 // 星空
 var stars = [];
@@ -422,7 +422,7 @@ function drawTile(gx, gy, gz, color, topColor, ox, oy, scale) {
   X.closePath(); X.fill();
 
   // 边缘高光
-  X.strokeStyle = 'rgba(255,255,255,0.1)';
+  X.strokeStyle = 'rgba(160,210,240,0.12)';
   X.lineWidth = 0.5;
   X.beginPath();
   X.moveTo(sx, sy - hh); X.lineTo(sx + hw, sy);
@@ -446,7 +446,7 @@ function drawAllTiles(ox, oy) {
     if (t.foggy && !t.revealed) {
       X.save();
       X.globalAlpha = 0.55 + Math.sin(gt * 0.03 + t.gx + t.gy) * 0.15;
-      X.fillStyle = '#2a2a3a';
+      X.fillStyle = '#203858';
       X.beginPath();
       X.moveTo(sx, sy - T * 0.5);
       X.lineTo(sx + T, sy);
@@ -456,7 +456,7 @@ function drawAllTiles(ox, oy) {
       X.fill();
       // 雾气问号
       X.globalAlpha = 0.6;
-      X.fillStyle = '#888';
+      X.fillStyle = '#6090b0';
       X.font = 'bold 22px Arial'; // 迷雾问号放大
       X.textAlign = 'center';
       X.textBaseline = 'middle';
@@ -490,9 +490,9 @@ function drawPlannedPath(ox, oy) {
     var hw = T, hh = T * 0.5;
 
     // 金色菱形外描边
-    X.strokeStyle = '#ffdd44';
+    X.strokeStyle = '#d0f040';
     X.lineWidth = 3;
-    X.shadowColor = '#ffdd44';
+    X.shadowColor = '#d0f040';
     X.shadowBlur = 8;
     X.beginPath();
     X.moveTo(px, py - hh - 2);
@@ -504,7 +504,7 @@ function drawPlannedPath(ox, oy) {
     X.shadowBlur = 0;
 
     // 半透明高亮覆盖
-    X.fillStyle = 'rgba(255,220,60,0.12)';
+    X.fillStyle = 'rgba(180,224,48,0.15)';
     X.beginPath();
     X.moveTo(px, py - hh);
     X.lineTo(px + hw, py);
@@ -515,9 +515,9 @@ function drawPlannedPath(ox, oy) {
   }
 
   // ---- 路径连线(发光) ----
-  X.strokeStyle = 'rgba(255,220,80,0.7)';
+  X.strokeStyle = 'rgba(180,224,48,0.7)';
   X.lineWidth = 3;
-  X.shadowColor = '#ffdd44';
+  X.shadowColor = '#d0f040';
   X.shadowBlur = 6;
   X.setLineDash([8, 4]);
   X.beginPath();
@@ -537,17 +537,17 @@ function drawPlannedPath(ox, oy) {
     var px = pp.x - ox, py = pp.y - oy - 10;
 
     // 外圈
-    X.fillStyle = '#ffdd44';
+    X.fillStyle = '#d0f040';
     X.beginPath();
     X.arc(px, py, 14, 0, Math.PI * 2);
     X.fill();
     // 内圈
-    X.fillStyle = '#332200';
+    X.fillStyle = '#1a3020';
     X.beginPath();
     X.arc(px, py, 11, 0, Math.PI * 2);
     X.fill();
     // 序号
-    X.fillStyle = '#ffee88';
+    X.fillStyle = '#e0f880';
     X.font = 'bold 13px Arial';
     X.textAlign = 'center'; X.textBaseline = 'middle';
     X.fillText('' + (i + 1), px, py);
@@ -562,7 +562,7 @@ function drawPlannedPath(ox, oy) {
     var len = Math.sqrt(dx*dx+dy*dy);
     if (len > 0) { dx/=len; dy/=len; }
     // 小三角箭头
-    X.fillStyle = '#ffdd44';
+    X.fillStyle = '#d0f040';
     X.beginPath();
     X.moveTo(ax + dx*18, ay + dy*18);
     X.lineTo(ax + dx*8 - dy*7, ay + dy*8 + dx*7);
@@ -590,7 +590,7 @@ function drawBranchMarkers(ox, oy) {
     // ---- 呼吸灯脉冲(更大更亮) ----
     var pulse = 0.6 + Math.sin(gt * 0.07 + i * 2.2) * 0.4;
     var brType = br.type;
-    var glowCol = (brType === 'key') ? '#ffd700' : (brType === 'chest') ? '#4488ff' : '#44ff88';
+    var glowCol = (brType === 'key') ? '#e0d040' : (brType === 'chest') ? '#40b8e0' : '#b0e040';
 
     X.save();
     // 外层大光晕
@@ -608,7 +608,7 @@ function drawBranchMarkers(ox, oy) {
 
     // ---- 标签圆(放大到 r=22) ----
     X.save();
-    X.fillStyle = 'rgba(0,0,0,0.75)';
+    X.fillStyle = 'rgba(8,24,48,0.82)';
     X.strokeStyle = glowCol;
     X.lineWidth = 2.5;
     X.beginPath();
@@ -626,7 +626,7 @@ function drawBranchMarkers(ox, oy) {
     if (branchStart) {
       var bsp = iso(branchStart.gx, branchStart.gy, branchStart.gz);
       X.save();
-      X.strokeStyle = 'rgba(255,255,255,0.08)';
+      X.strokeStyle = 'rgba(100,160,200,0.15)';
       X.lineWidth = 1;
       X.setLineDash([4, 5]);
       X.beginPath();
@@ -669,23 +669,23 @@ function drawChar(ox, oy) {
   var f = P.facing;
 
   // 影子
-  X.globalAlpha = 0.25;
-  X.fillStyle = '#000';
+  X.globalAlpha = 0.3;
+  X.fillStyle = '#082040';
   X.beginPath(); X.ellipse(0, 16, 10, 4, 0, 0, Math.PI*2); X.fill();
   X.globalAlpha = 1;
 
   // 身体
-  X.fillStyle = '#4ddb6a';
+  X.fillStyle = '#40c8d8';
   X.beginPath(); X.ellipse(-4*f, -2, 8, 11, 0.15*f, 0, Math.PI*2); X.fill();
   X.beginPath(); X.ellipse(4*f, -2, 8, 11, -0.15*f, 0, Math.PI*2); X.fill();
-  X.fillStyle = '#7aee92';
+  X.fillStyle = '#70e0e8';
   X.beginPath(); X.ellipse(-2*f, -6, 3.5, 5.5, 0.15*f, 0, Math.PI*2); X.fill();
 
   // 眼睛
   X.fillStyle = '#fff';
   X.beginPath(); X.arc(-4*f, -7, 5, 0, Math.PI*2); X.fill();
   X.beginPath(); X.arc(4*f, -7, 5, 0, Math.PI*2); X.fill();
-  X.fillStyle = '#2244cc';
+  X.fillStyle = '#1a3060';
   X.beginPath(); X.arc(-3*f, -7, 2.8, 0, Math.PI*2); X.fill();
   X.beginPath(); X.arc(5*f, -7, 2.8, 0, Math.PI*2); X.fill();
   X.fillStyle = '#fff';
@@ -697,7 +697,7 @@ function drawChar(ox, oy) {
   X.fillStyle = '#222';
   X.beginPath(); X.ellipse(-4*f+legA, 13, 4.5, 3, 0, 0, Math.PI*2); X.fill();
   X.beginPath(); X.ellipse(4*f-legA, 13, 4.5, 3, 0, 0, Math.PI*2); X.fill();
-  X.strokeStyle = '#f0c020'; X.lineWidth = 1;
+  X.strokeStyle = '#f0d840'; X.lineWidth = 1;
   X.beginPath(); X.arc(-4*f+legA, 12, 2.5, 0.5, 2.5); X.stroke();
   X.beginPath(); X.arc(4*f-legA, 12, 2.5, 0.5, 2.5); X.stroke();
 
@@ -722,9 +722,9 @@ function drawUI() {
   // 第一层: 大底板(高对比度, 和星空彻底剥离)
   var panelH = 88;
   var grad = X.createLinearGradient(0, 0, 0, panelH + 15);
-  grad.addColorStop(0, 'rgba(8,4,20,0.88)');
-  grad.addColorStop(0.7, 'rgba(12,8,28,0.75)');
-  grad.addColorStop(1, 'rgba(12,8,28,0)');
+  grad.addColorStop(0, 'rgba(8,32,60,0.88)');
+  grad.addColorStop(0.7, 'rgba(10,40,72,0.7)');
+  grad.addColorStop(1, 'rgba(10,40,72,0)');
   X.fillStyle = grad;
   X.fillRect(0, 0, GW, panelH + 15);
 
@@ -732,7 +732,7 @@ function drawUI() {
   X.fillStyle = 'rgba(255,255,255,0.06)';
   roundRect(12, 8, GW - 24, panelH - 4, 14);
   X.fill();
-  X.strokeStyle = 'rgba(255,255,255,0.08)';
+  X.strokeStyle = 'rgba(100,160,200,0.15)';
   X.lineWidth = 1;
   roundRect(12, 8, GW - 24, panelH - 4, 14);
   X.stroke();
@@ -746,7 +746,7 @@ function drawUI() {
   X.textAlign = 'left'; X.textBaseline = 'middle';
   X.fillText(score + '', 26, row1Y);
   // 分数标签
-  X.font = '13px Arial'; X.fillStyle = 'rgba(255,255,255,0.5)';
+  X.font = '13px Arial'; X.fillStyle = 'rgba(160,200,220,0.65)';
   X.fillText('得分', 26, row1Y - 22);
 
   // 生命 — 大心心
@@ -758,13 +758,13 @@ function drawUI() {
   // 钥匙(居中, 有钥匙时显示)
   if (keys > 0) {
     X.textAlign = 'center'; X.font = 'bold 22px Arial';
-    X.fillStyle = '#ffd700';
+    X.fillStyle = '#e0d040';
     X.fillText('🔑 x' + keys, GW / 2, row1Y);
   }
 
   // ---- 第二排: 最高分(左) + 宝箱/combo(中) + 步数(右) ----
   var row2Y = 68;
-  X.font = '12px Arial'; X.fillStyle = 'rgba(255,255,255,0.4)';
+  X.font = '12px Arial'; X.fillStyle = 'rgba(160,200,220,0.6)';
   X.textAlign = 'left';
   X.fillText('最高 ' + best, 26, row2Y);
 
@@ -776,12 +776,12 @@ function drawUI() {
     X.textAlign = 'center';
     X.font = 'bold 16px Arial';
     X.globalAlpha = Math.min(1, comboT / 25);
-    X.fillStyle = '#ffcc00';
+    X.fillStyle = '#e0d040';
     X.fillText('🔥 ' + combo + '连击! x' + (1 + Math.floor(combo/3)), GW/2, row2Y);
     X.globalAlpha = 1;
   } else if (chestsOpened > 0) {
     X.textAlign = 'center'; X.font = '12px Arial';
-    X.fillStyle = '#4488ff';
+    X.fillStyle = '#40b8e0';
     X.fillText('📦 x' + chestsOpened, GW/2, row2Y);
   }
 
@@ -792,10 +792,10 @@ function drawUI() {
     X.save();
     if (plannedPath.length < 2) {
       // 未选好: 低调提示条
-      X.fillStyle = 'rgba(0,0,0,0.5)';
+      X.fillStyle = 'rgba(8,24,48,0.7)';
       roundRect(GW/2 - 130, GH - 62, 260, 42, 10);
       X.fill();
-      X.fillStyle = 'rgba(255,255,255,0.6)';
+      X.fillStyle = '#b0d8e8';
       X.font = '14px Arial'; X.textAlign = 'center'; X.textBaseline = 'middle';
       if (plannedPath.length === 0) {
         X.fillText('👆 点击分支地块, 规划前进路线', GW/2, GH - 41);
@@ -819,13 +819,13 @@ function drawGoButton() {
   var pulse = 0.85 + Math.sin(gt * 0.12) * 0.15;
 
   // 外圈发光
-  X.shadowColor = '#33ee66';
+  X.shadowColor = '#b8e030';
   X.shadowBlur = 22 * pulse;
 
   // 按钮渐变
   var bg = X.createLinearGradient(bx, by, bx, by + bh);
-  bg.addColorStop(0, '#44dd77');
-  bg.addColorStop(1, '#22aa55');
+  bg.addColorStop(0, '#b8e030');
+  bg.addColorStop(1, '#90c020');
   X.fillStyle = bg;
   roundRect(bx, by, bw, bh, 16);
   X.fill();
@@ -840,6 +840,7 @@ function drawGoButton() {
   X.fillStyle = '#fff';
   X.font = 'bold 22px Arial';
   X.textAlign = 'center'; X.textBaseline = 'middle';
+  X.fillStyle = '#1a3020';
   X.fillText('出发!  (' + plannedPath.length + ' 步)', GW/2, by + bh/2);
 
   // 边框
@@ -859,7 +860,7 @@ function drawResult() {
   X.save();
   X.globalAlpha = a;
   X.textAlign = 'center'; X.textBaseline = 'middle';
-  X.fillStyle = resultCol === '#22ff66' ? 'rgba(34,255,102,0.06)' : 'rgba(255,50,50,0.06)';
+  X.fillStyle = resultCol === '#c0e840' ? 'rgba(180,232,48,0.08)' : 'rgba(224,96,144,0.08)';
   X.fillRect(0, 0, GW, GH);
   X.font = 'bold 30px Arial'; X.fillStyle = resultCol;
   X.shadowColor = resultCol; X.shadowBlur = 15;
@@ -872,8 +873,8 @@ function drawStars() {
   X.save();
   for (var i = 0; i < stars.length; i++) {
     var s = stars[i];
-    X.globalAlpha = 0.2 + Math.sin(gt * s.sp + i) * 0.25;
-    X.fillStyle = '#fff';
+    X.globalAlpha = 0.25 + Math.sin(gt * s.sp + i) * 0.35;
+    X.fillStyle = (i % 3 === 0) ? '#80e0a0' : ((i % 3 === 1) ? '#a0d8f0' : '#e0f080');
     X.beginPath(); X.arc(s.x, s.y, s.s, 0, Math.PI*2); X.fill();
   }
   X.globalAlpha = 1; X.restore();
@@ -881,20 +882,20 @@ function drawStars() {
 
 function drawMenu() {
   X.save();
-  X.fillStyle = 'rgba(10,6,24,0.9)';
+  X.fillStyle = 'rgba(6,24,50,0.92)';
   X.fillRect(0, 0, GW, GH);
   drawStars();
   X.textAlign = 'center'; X.textBaseline = 'middle';
 
-  X.font = 'bold 38px Arial'; X.fillStyle = '#4ddb6a';
-  X.shadowColor = '#4ddb6a'; X.shadowBlur = 15;
+  X.font = 'bold 38px Arial'; X.fillStyle = '#40c8d8';
+  X.shadowColor = '#b8e030'; X.shadowBlur = 15;
   X.fillText('不可能的阶梯', GW/2, GH*0.18);
   X.shadowBlur = 0;
 
-  X.font = '14px Arial'; X.fillStyle = '#8888aa';
+  X.font = '14px Arial'; X.fillStyle = '#70a8d0';
   X.fillText('观察 · 推理 · 选择 · 规划', GW/2, GH*0.24);
 
-  X.font = '13px Arial'; X.fillStyle = '#aaaacc';
+  X.font = '13px Arial'; X.fillStyle = '#88b8d8';
   var rules = [
     '🗺️ 角色走到分叉点自动停下',
     '👀 只能看到分支前 2 格，后面是迷雾',
@@ -914,14 +915,14 @@ function drawMenu() {
   }
 
   var btnY = GH * 0.78;
-  X.fillStyle = '#4ddb6a';
+  X.fillStyle = '#40c8d8';
   roundRect(GW/2-80, btnY-25, 160, 50, 15);
   X.fill();
-  X.fillStyle = '#fff'; X.font = 'bold 20px Arial';
+  X.fillStyle = '#1a3020'; X.font = 'bold 20px Arial';
   X.fillText('开始游戏', GW/2, btnY);
 
   if (best > 0) {
-    X.font = '13px Arial'; X.fillStyle = '#ffd700';
+    X.font = '13px Arial'; X.fillStyle = '#e0d040';
     X.fillText('🏆 最高分: ' + best, GW/2, btnY + 45);
   }
   X.restore();
@@ -929,12 +930,12 @@ function drawMenu() {
 
 function drawOver() {
   X.save();
-  X.fillStyle = 'rgba(10,6,24,0.85)';
+  X.fillStyle = 'rgba(6,24,50,0.88)';
   X.fillRect(0, 0, GW, GH);
   X.textAlign = 'center'; X.textBaseline = 'middle';
 
-  X.font = 'bold 34px Arial'; X.fillStyle = '#ff4466';
-  X.shadowColor = '#ff4466'; X.shadowBlur = 12;
+  X.font = 'bold 34px Arial'; X.fillStyle = '#e06090';
+  X.shadowColor = '#e06090'; X.shadowBlur = 12;
   X.fillText('游戏结束', GW/2, GH*0.25);
   X.shadowBlur = 0;
 
@@ -943,15 +944,15 @@ function drawOver() {
   X.fillText('步数: ' + step + '  |  宝箱: ' + chestsOpened, GW/2, GH*0.40);
 
   if (score >= best && score > 0) {
-    X.fillStyle = '#ffd700'; X.font = 'bold 18px Arial';
+    X.fillStyle = '#e0d040'; X.font = 'bold 18px Arial';
     X.fillText('🎉 新纪录!', GW/2, GH*0.47);
   }
 
   var btnY = GH*0.58;
-  X.fillStyle = '#4ddb6a';
+  X.fillStyle = '#40c8d8';
   roundRect(GW/2-80, btnY-25, 160, 50, 15);
   X.fill();
-  X.fillStyle = '#fff'; X.font = 'bold 20px Arial';
+  X.fillStyle = '#1a3020'; X.font = 'bold 20px Arial';
   X.fillText('再来一局', GW/2, btnY);
   X.restore();
 }
@@ -1047,13 +1048,13 @@ function settleOneTile(tile) {
       case 'good':
         var pts = 2 * (1 + Math.floor(combo / 3));
         score += pts;
-        addFloat(tile.gx, tile.gy, tile.gz + 1, '+' + pts, '#44ff88');
-        addP(tile.gx, tile.gy, tile.gz, '#44ff88', 3);
+        addFloat(tile.gx, tile.gy, tile.gz + 1, '+' + pts, '#80e0a0');
+        addP(tile.gx, tile.gy, tile.gz, '#80e0a0', 3);
         break;
       case 'bad':
         // 单格上的bad物品: 小扣分, 不扣命(只有分支整体结果才扣命)
         score = Math.max(0, score - 1);
-        addFloat(tile.gx, tile.gy, tile.gz + 1, '-1', '#ff6666');
+        addFloat(tile.gx, tile.gy, tile.gz + 1, '-1', '#e080a0');
         shakeT = 5;
         break;
       case 'key':
@@ -1106,7 +1107,7 @@ function finishBranch() {
   if (!br) {
     // 安全路径中间结束
     resultTxt = '🌿 安全通过!';
-    resultCol = '#22ff66';
+    resultCol = '#c0e840';
     combo++; comboT = 120;
     state = ST.RESULT; resultT = 40;
     return;
@@ -1135,18 +1136,18 @@ function finishBranch() {
     score += pts;
     combo++; comboT = 120;
     resultTxt = br.label + ' +' + pts + '分!';
-    resultCol = '#22ff66';
-    addP(P.gx, P.gy, P.gz, '#44ff88', 12);
-    addFloat(P.gx, P.gy, P.gz + 1, '+' + pts, '#44ff88');
+    resultCol = '#c0e840';
+    addP(P.gx, P.gy, P.gz, '#80e0a0', 12);
+    addFloat(P.gx, P.gy, P.gz + 1, '+' + pts, '#80e0a0');
   } else {
     lives--;
     combo = 0; comboT = 0; shakeT = 18;
     var penalty = Math.abs(br.reward) * 3;
     score = Math.max(0, score - penalty);
     resultTxt = br.label + '! ❤️-1 (-' + penalty + ')';
-    resultCol = '#ff3344';
-    addP(P.gx, P.gy, P.gz, '#ff4444', 16);
-    addFloat(P.gx, P.gy, P.gz + 1, '-' + penalty, '#ff4444');
+    resultCol = '#e06090';
+    addP(P.gx, P.gy, P.gz, '#e06090', 16);
+    addFloat(P.gx, P.gy, P.gz + 1, '-' + penalty, '#e06090');
   }
 
   state = ST.RESULT;
@@ -1225,7 +1226,7 @@ function updateCamera() {
   }
 
   camTX = cp.x - GW / 2;
-  camTY = cp.y - GH * 0.35; // 镜头稍高，前方可见更多
+  camTY = cp.y - GH * 0.42; // 地块居中偏下
   camX += (camTX - camX) * 0.05;
   camY += (camTY - camY) * 0.05;
 }
@@ -1233,9 +1234,9 @@ function updateCamera() {
 // ====== 主绘制 ======
 function draw() {
   var grad = X.createLinearGradient(0, 0, 0, GH);
-  grad.addColorStop(0, '#0a0618');
-  grad.addColorStop(0.4, '#10102a');
-  grad.addColorStop(1, '#1a1535');
+  grad.addColorStop(0, '#1878c0');
+  grad.addColorStop(0.4, '#1060a0');
+  grad.addColorStop(1, '#082848');
   X.fillStyle = grad; X.fillRect(0, 0, GW, GH);
 
   if (state === ST.MENU) { drawMenu(); return; }
